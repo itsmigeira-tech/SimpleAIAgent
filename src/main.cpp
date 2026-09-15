@@ -4,6 +4,7 @@
 #include <vector>
 #include <sstream>
 #include <commctrl.h>
+#include <cctype>
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "winhttp.lib")
@@ -74,6 +75,105 @@ std::wstring Utf8ToWide(const std::string& s) {
     std::wstring w(size, 0);
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], size);
     return w;
+}
+
+// ----- Local exact integer math (digit strings) -----
+std::string TrimDigits(std::string s) {
+    size_t i = 0;
+    while (i + 1 < s.size() && s[i] == '0') i++;
+    return s.substr(i);
+}
+
+std::string AddBig(const std::string& a, const std::string& b) {
+    int i = (int)a.size() - 1, j = (int)b.size() - 1, carry = 0;
+    std::string r;
+    while (i >= 0 || j >= 0 || carry) {
+        int sum = carry;
+        if (i >= 0) sum += a[i--] - '0';
+        if (j >= 0) sum += b[j--] - '0';
+        r.push_back(char('0' + (sum % 10)));
+        carry = sum / 10;
+    }
+    std::reverse(r.begin(), r.end());
+    return TrimDigits(r);
+}
+
+std::string SubBig(std::string a, std::string b) {
+    // assumes a >= b, both non-negative digit strings
+    int i = (int)a.size() - 1, j = (int)b.size() - 1, borrow = 0;
+    std::string r;
+    while (i >= 0) {
+        int d = (a[i] - '0') - borrow - (j >= 0 ? (b[j] - '0') : 0);
+        if (d < 0) { d += 10; borrow = 1; } else borrow = 0;
+        r.push_back(char('0' + d));
+        i--; j--;
+    }
+    std::reverse(r.begin(), r.end());
+    return TrimDigits(r);
+}
+
+bool GreaterEq(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return a.size() > b.size();
+    return a >= b;
+}
+
+std::string MulBig(const std::string& a, const std::string& b) {
+    if (a == "0" || b == "0") return "0";
+    std::vector<int> res(a.size() + b.size(), 0);
+    for (int i = (int)a.size() - 1; i >= 0; i--) {
+        for (int j = (int)b.size() - 1; j >= 0; j--) {
+            int mul = (a[i] - '0') * (b[j] - '0') + res[i + j + 1];
+            res[i + j + 1] = mul % 10;
+            res[i + j] += mul / 10;
+        }
+    }
+    std::string r;
+    for (int d : res) r.push_back(char('0' + d));
+    return TrimDigits(r);
+}
+
+bool TryLocalMath(const std::wstring& prompt, std::wstring& out) {
+    // Accept prompts that are only digits, spaces, and one of + - *
+    std::string s;
+    for (wchar_t c : prompt) {
+        if (c >= L'0' && c <= L'9') s.push_back((char)c);
+        else if (c == L'+' || c == L'-' || c == L'*' || c == L'x' || c == L'X') s.push_back(c == L'x' || c == L'X' ? '*' : (char)c);
+        else if (c == L' ' || c == L'\t' || c == L'?' || c == L'=') continue;
+        else return false;
+    }
+    if (s.empty()) return false;
+
+    char op = 0;
+    size_t opPos = std::string::npos;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '+' || s[i] == '*' || (s[i] == '-' && i > 0)) {
+            if (op != 0) return false; // only one operator
+            op = s[i];
+            opPos = i;
+        }
+    }
+    if (op == 0 || opPos == 0 || opPos + 1 >= s.size()) return false;
+
+    std::string left = TrimDigits(s.substr(0, opPos));
+    std::string right = TrimDigits(s.substr(opPos + 1));
+    if (left.empty() || right.empty()) return false;
+    for (char c : left) if (c < '0' || c > '9') return false;
+    for (char c : right) if (c < '0' || c > '9') return false;
+
+    std::string result;
+    if (op == '+') {
+        result = AddBig(left, right);
+    } else if (op == '-') {
+        if (GreaterEq(left, right)) result = SubBig(left, right);
+        else result = "-" + SubBig(right, left);
+    } else if (op == '*') {
+        // keep product length reasonable
+        if (left.size() + right.size() > 200) return false;
+        result = MulBig(left, right);
+    } else return false;
+
+    out = Utf8ToWide(result);
+    return true;
 }
 
 std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const std::wstring& path, const std::string& body) {
@@ -149,23 +249,17 @@ void ReplaceAll(std::wstring& s, const std::wstring& from, const std::wstring& t
     }
 }
 
-// Turn markdown fences into clear code blocks in the plain text chat
 std::wstring FormatCodeBlocks(std::wstring s) {
     const std::wstring fence = L"```";
     const std::wstring openBar = L"\r\n----- CODE -----\r\n";
     const std::wstring closeBar = L"\r\n----- END CODE -----\r\n";
-
     size_t pos = 0;
     bool open = true;
     while ((pos = s.find(fence, pos)) != std::wstring::npos) {
         size_t endLine = s.find(L'\n', pos);
-        // Opening fence may include a language tag on the same line: ```cpp
         size_t replaceEnd = pos + fence.size();
         if (open) {
-            if (endLine != std::wstring::npos && endLine < pos + 20) {
-                // skip language tag through end of that line
-                replaceEnd = endLine + 1;
-            }
+            if (endLine != std::wstring::npos && endLine < pos + 20) replaceEnd = endLine + 1;
             s.replace(pos, replaceEnd - pos, openBar);
             pos += openBar.size();
         } else {
@@ -199,10 +293,8 @@ std::wstring CleanReply(std::wstring s) {
         }
     }
     s = out;
-
     while (!s.empty() && (s.front() == L' ' || s.front() == L'\n' || s.front() == L'\t')) s.erase(s.begin());
     while (!s.empty() && (s.back() == L' ' || s.back() == L'\n' || s.back() == L'\t')) s.pop_back();
-
     s = FormatCodeBlocks(s);
     return StripEmojis(s);
 }
@@ -243,7 +335,6 @@ std::wstring ExtractChatContent(const std::string& json) {
         if (json[i] == '"') break;
         text.push_back(json[i]);
     }
-
     return CleanReply(Utf8ToWide(text));
 }
 
@@ -277,10 +368,9 @@ std::string BuildBody(const char* modelId, const std::string& promptUtf, const s
         "You are a helpful assistant in Simple AI Agent. "
         "Reply in plain text only. Never use emojis. "
         "Never output tags like </think> or <think>. "
-        "Give one clear answer. Do not repeat yourself. "
-        "When you show code, wrap it in markdown fences like:\n"
-        "```language\ncode here\n```\n"
-        "For simple math, answer with the number and one short sentence. "
+        "Keep answers short and exact. One answer only. "
+        "Never invent or pad digits in math. "
+        "When you show code, wrap it in markdown fences. "
         "If asked what model you are, answer with: " + modelLabel + ".";
 
     return std::string("{\"model\":\"") + modelId +
@@ -303,9 +393,17 @@ void SendPrompt() {
     SetWindowTextW(hInput, L"");
     EnableWindow(hSend, FALSE);
 
+    std::wstring answer;
+
+    // Exact local math for simple + - * on digit strings
+    if (TryLocalMath(prompt, answer)) {
+        AppendOutput(L"Agent: " + answer + L"\r\n");
+        EnableWindow(hSend, TRUE);
+        return;
+    }
+
     std::string promptUtf = WideToUtf8(prompt);
     std::string modelLabel = WideToUtf8(g_models[sel].display);
-    std::wstring answer;
 
     bool used[32] = {};
     int order[32];
@@ -391,7 +489,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_BORDER,
             20, 370, 540, 28, hwnd, (HMENU)ID_INPUT, NULL, NULL);
 
-        // Placeholder when empty
         SendMessageW(hInput, EM_SETCUEBANNER, TRUE, (LPARAM)L"Ask Anything...");
 
         hSend = CreateWindowW(L"BUTTON", L"Send",
@@ -402,7 +499,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-        // Monospace for chat so code lines up
         HFONT hCodeFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN, L"Consolas");
