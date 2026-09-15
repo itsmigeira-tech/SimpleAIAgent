@@ -22,9 +22,8 @@
 #define ID_OUTPUT 102
 #define ID_SEND 103
 #define ID_MODEL 104
-#define ID_LABEL 106
 
-HWND hInput, hOutput, hSend, hModel, hLabel;
+HWND hInput, hOutput, hSend, hModel;
 HBRUSH hBrushWindow = NULL;
 HBRUSH hBrushEdit = NULL;
 HFONT hFontUI = NULL;
@@ -515,34 +514,43 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
-        hFontUI = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        hFontUI = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         hFontCode = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN, L"Consolas");
-        hLabel = CreateWindowW(L"STATIC", L"Model:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-            24, 18, 50, 22, hwnd, (HMENU)ID_LABEL, NULL, NULL);
-        hModel = CreateWindowW(L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-            80, 14, 190, 220, hwnd, (HMENU)ID_MODEL, NULL, NULL);
+
+        // Messages fill most of the window
         hOutput = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_CLIPSIBLINGS,
-            24, 56, 676, 360, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
+            24, 24, 676, 400, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
+
+        // Input row: [Model] [Ask Anything...] [Send]
+        hModel = CreateWindowW(L"COMBOBOX", NULL,
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL | WS_CLIPSIBLINGS,
+            32, 440, 130, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
+
         hInput = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_CLIPSIBLINGS,
-            24, 432, 540, 36, hwnd, (HMENU)ID_INPUT, NULL, NULL);
+            170, 440, 420, 36, hwnd, (HMENU)ID_INPUT, NULL, NULL);
+
         SendMessageW(hInput, EM_SETCUEBANNER, TRUE, (LPARAM)L"Ask Anything...");
+
         hSend = CreateWindowW(L"BUTTON", L"Send",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_CLIPSIBLINGS,
-            576, 430, 124, 40, hwnd, (HMENU)ID_SEND, NULL, NULL);
+            600, 438, 100, 40, hwnd, (HMENU)ID_SEND, NULL, NULL);
+
         SendMessageW(hOutput, WM_SETFONT, (WPARAM)hFontCode, TRUE);
         SendMessageW(hInput, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessageW(hSend, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessageW(hModel, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-        SendMessageW(hLabel, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+
         ApplyRoundRegion(hOutput, 16);
         ApplyRoundRegion(hInput, 14);
         ApplyRoundRegion(hSend, 14);
+        ApplyRoundRegion(hModel, 12);
+
         LoadModels();
         break;
     }
@@ -559,15 +567,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         RECT rc;
         GetClientRect(hwnd, &rc);
         DrawVerticalGradient(hdc, rc, RGB(252, 252, 253), RGB(240, 240, 243));
-        if (hOutput && hInput) {
-            RECT ro, ri;
+
+        // Rounded card around messages
+        if (hOutput) {
+            RECT ro;
             GetWindowRect(hOutput, &ro);
-            GetWindowRect(hInput, &ri);
             MapWindowPoints(HWND_DESKTOP, hwnd, (LPPOINT)&ro, 2);
-            MapWindowPoints(HWND_DESKTOP, hwnd, (LPPOINT)&ri, 2);
-            RECT cluster = { ro.left - 6, ro.top - 6, ro.right + 6, ri.bottom + 6 };
-            DrawRoundedRect(hdc, cluster, 18, RGB(255, 255, 255), RGB(220, 220, 225));
+            RECT card = { ro.left - 6, ro.top - 6, ro.right + 6, ro.bottom + 6 };
+            DrawRoundedRect(hdc, card, 18, RGB(255, 255, 255), RGB(220, 220, 225));
         }
+
+        // Rounded bar behind input row (model + input + send)
+        if (hInput && hModel && hSend) {
+            RECT rm, ri, rs;
+            GetWindowRect(hModel, &rm);
+            GetWindowRect(hInput, &ri);
+            GetWindowRect(hSend, &rs);
+            MapWindowPoints(HWND_DESKTOP, hwnd, (LPPOINT)&rm, 2);
+            MapWindowPoints(HWND_DESKTOP, hwnd, (LPPOINT)&ri, 2);
+            MapWindowPoints(HWND_DESKTOP, hwnd, (LPPOINT)&rs, 2);
+            RECT bar = {
+                min(rm.left, ri.left) - 10,
+                min(rm.top, min(ri.top, rs.top)) - 8,
+                max(rs.right, ri.right) + 10,
+                max(rm.bottom, max(ri.bottom, rs.bottom)) + 8
+            };
+            DrawRoundedRect(hdc, bar, 20, RGB(255, 255, 255), RGB(210, 210, 215));
+        }
+
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -585,12 +612,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return TRUE;
         }
         break;
-    }
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = (HDC)wParam;
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(50, 50, 55));
-        return (LRESULT)GetStockObject(NULL_BRUSH);
     }
     case WM_CTLCOLOREDIT: {
         HDC hdc = (HDC)wParam;
@@ -610,35 +631,58 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
         int w = LOWORD(lParam);
         int h = HIWORD(lParam);
+
         int left = 24;
-        int top = 56;
+        int top = 24;
         int rightPad = 24;
-        int bottomPad = 20;
-        int inputH = 36;
-        int sendW = 124;
+        int bottomPad = 18;
+        int rowH = 36;
+        int sendW = 100;
         int sendH = 40;
-        int gap = 10;
+        int modelW = 130;
+        int gap = 8;
+
         int panelW = w - left - rightPad;
-        if (panelW < 260) panelW = 260;
-        int inputY = h - bottomPad - inputH;
-        if (inputY < top + 90) inputY = top + 90;
-        int outputH = inputY - gap - top;
-        if (outputH < 70) outputH = 70;
+        if (panelW < 300) panelW = 300;
+
+        // Input bar near bottom
+        int rowY = h - bottomPad - rowH;
+        if (rowY < top + 100) rowY = top + 100;
+
+        // Messages above the input bar
+        int outputH = rowY - 16 - top;
+        if (outputH < 80) outputH = 80;
+
         if (hOutput) {
             MoveWindow(hOutput, left, top, panelW, outputH, TRUE);
             ApplyRoundRegion(hOutput, 16);
         }
+
+        // [Model] [Input..............] [Send]
+        int modelX = left + 8;
+        int inputX = modelX + modelW + gap;
+        int sendX = left + panelW - sendW - 8;
+        int inputW = sendX - gap - inputX;
+        if (inputW < 120) inputW = 120;
+
+        if (hModel) {
+            MoveWindow(hModel, modelX, rowY, modelW, 200, TRUE);
+            ApplyRoundRegion(hModel, 12);
+        }
         if (hInput) {
-            MoveWindow(hInput, left, inputY, panelW - sendW - gap, inputH, TRUE);
+            MoveWindow(hInput, inputX, rowY, inputW, rowH, TRUE);
             ApplyRoundRegion(hInput, 14);
         }
         if (hSend) {
-            MoveWindow(hSend, left + panelW - sendW, inputY - 2, sendW, sendH, TRUE);
+            MoveWindow(hSend, sendX, rowY - 2, sendW, sendH, TRUE);
             ApplyRoundRegion(hSend, 14);
             InvalidateRect(hSend, NULL, TRUE);
         }
-        if (hInput) SetWindowPos(hInput, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-        if (hSend) SetWindowPos(hSend, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+
+        SetWindowPos(hModel, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        SetWindowPos(hInput, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        SetWindowPos(hSend, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+
         InvalidateRect(hwnd, NULL, TRUE);
         break;
     }
