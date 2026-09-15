@@ -5,20 +5,48 @@ echo.
 echo === Simple AI Agent Build ===
 echo.
 
-:: Must run from folder that contains CMakeLists.txt
-if not exist "CMakeLists.txt" (
-    echo ERROR: CMakeLists.txt not found.
-    echo Run this script from the project root folder.
-    echo Example: C:\Users\Migeira\Downloads\SimpleAIAgent-main\SimpleAIAgent-main
+:: Go to the folder where this script lives
+cd /d "%~dp0"
+
+:: Find CMakeLists.txt (handles nested zip folders)
+if exist "CMakeLists.txt" (
+    set "ROOT=%cd%"
+) else if exist "SimpleAIAgent-main\CMakeLists.txt" (
+    cd SimpleAIAgent-main
+    set "ROOT=%cd%"
+) else if exist "SimpleAIAgent\CMakeLists.txt" (
+    cd SimpleAIAgent
+    set "ROOT=%cd%"
+) else (
+    :: Search one level of subfolders
+    for /d %%D in (*) do (
+        if exist "%%D\CMakeLists.txt" (
+            cd "%%D"
+            set "ROOT=%cd%"
+            goto :found
+        )
+    )
+    echo ERROR: CMakeLists.txt not found near this script.
+    echo.
+    echo Put build.cmd in the same folder as CMakeLists.txt
+    echo or extract the full GitHub ZIP again.
+    echo.
+    echo Current folder: %cd%
+    echo Files here:
+    dir /b
+    echo.
     pause
     exit /b 1
 )
+:found
+echo Project folder: %cd%
+echo.
 
 :: Check admin for installs
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo Requesting Administrator rights for installs...
-    powershell -Command "Start-Process '%~f0' -Verb RunAs"
+    powershell -Command "Start-Process -FilePath '%~f0' -WorkingDirectory '%cd%' -Verb RunAs"
     exit /b
 )
 
@@ -62,7 +90,7 @@ cd build
 cmake .. -G "Visual Studio 17 2022" -A x64
 if %errorlevel% neq 0 (
     echo CMake configure failed.
-    echo Try opening "Developer Command Prompt for VS 2022" and run build.cmd from there.
+    echo Try opening "x64 Native Tools Command Prompt for VS 2022" and run build.cmd from there.
     pause
     exit /b 1
 )
