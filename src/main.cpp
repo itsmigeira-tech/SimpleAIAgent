@@ -19,9 +19,8 @@
 #define ID_SEND 103
 #define ID_MODEL 104
 #define ID_LABEL 106
-#define ID_CHAT 107
 
-HWND hInput, hOutput, hSend, hModel, hLabel, hChat;
+HWND hInput, hOutput, hSend, hModel, hLabel;
 HBRUSH hBrushWindow = NULL;
 
 struct Endpoint {
@@ -478,35 +477,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CREATE: {
         hLabel = CreateWindowW(L"STATIC", L"Model:",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 18, 50, 20, hwnd, (HMENU)ID_LABEL, NULL, NULL);
+            20, 16, 50, 20, hwnd, (HMENU)ID_LABEL, NULL, NULL);
 
         hModel = CreateWindowW(L"COMBOBOX", NULL,
             WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-            75, 14, 180, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
+            75, 12, 180, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
 
-        // One chat panel border. Messages + input + Send live inside it.
-        hChat = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
-            WS_CHILD | WS_VISIBLE,
-            20, 48, 660, 420, hwnd, (HMENU)ID_CHAT, NULL, NULL);
+        // Messages area (top of chat)
+        hOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_CLIPSIBLINGS,
+            20, 48, 660, 360, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
 
-        hOutput = CreateWindowExW(0, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-            28, 56, 644, 360, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
-
-        hInput = CreateWindowExW(0, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_BORDER,
-            28, 424, 530, 28, hwnd, (HMENU)ID_INPUT, NULL, NULL);
+        // Input row sits under messages, still part of the chat block
+        hInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_CLIPSIBLINGS,
+            20, 420, 540, 32, hwnd, (HMENU)ID_INPUT, NULL, NULL);
 
         SendMessageW(hInput, EM_SETCUEBANNER, TRUE, (LPARAM)L"Ask Anything...");
 
         hSend = CreateWindowW(L"BUTTON", L"Send",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            568, 422, 100, 32, hwnd, (HMENU)ID_SEND, NULL, NULL);
-
-        // Keep input/send above the chat frame
-        SetWindowPos(hOutput, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-        SetWindowPos(hInput, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-        SetWindowPos(hSend, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_CLIPSIBLINGS,
+            570, 418, 110, 36, hwnd, (HMENU)ID_SEND, NULL, NULL);
 
         HFONT hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -543,31 +534,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
         int w = LOWORD(lParam);
         int h = HIWORD(lParam);
+
         int left = 20;
         int top = 48;
-        int panelW = w - 40;
-        int panelH = h - 68;
-        if (panelW < 200) panelW = 200;
-        if (panelH < 160) panelH = 160;
-
-        if (hChat) MoveWindow(hChat, left, top, panelW, panelH, TRUE);
-
-        int pad = 8;
-        int inputH = 28;
-        int sendW = 100;
-        int sendH = 32;
+        int rightPad = 20;
+        int bottomPad = 16;
+        int inputH = 32;
+        int sendW = 110;
+        int sendH = 36;
         int gap = 8;
 
-        int innerL = left + pad;
-        int innerT = top + pad;
-        int innerW = panelW - pad * 2;
-        int inputY = top + panelH - pad - inputH;
-        int outputH = inputY - gap - innerT;
-        if (outputH < 40) outputH = 40;
+        int panelW = w - left - rightPad;
+        if (panelW < 240) panelW = 240;
 
-        if (hOutput) MoveWindow(hOutput, innerL, innerT, innerW, outputH, TRUE);
-        if (hInput) MoveWindow(hInput, innerL, inputY, innerW - sendW - gap, inputH, TRUE);
-        if (hSend) MoveWindow(hSend, innerL + innerW - sendW, inputY - 2, sendW, sendH, TRUE);
+        // Bottom row for input + Send (always visible)
+        int inputY = h - bottomPad - inputH;
+        if (inputY < top + 80) inputY = top + 80;
+
+        // Messages fill space above the input row
+        int outputH = inputY - gap - top;
+        if (outputH < 60) outputH = 60;
+
+        if (hOutput) MoveWindow(hOutput, left, top, panelW, outputH, TRUE);
+        if (hInput) MoveWindow(hInput, left, inputY, panelW - sendW - gap, inputH, TRUE);
+        if (hSend) MoveWindow(hSend, left + panelW - sendW, inputY - 2, sendW, sendH, TRUE);
+
+        // Keep input and Send on top
+        if (hInput) SetWindowPos(hInput, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        if (hSend) SetWindowPos(hSend, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         break;
     }
     case WM_DESTROY:
