@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Simple AI Agent" Language="1033" Version="1.0.0.0"
+           Manufacturer="itsmigeira-tech" UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="ProductFeature" Title="Simple AI Agent" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="SimpleAIAgent" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Simple AI Agent" />
+      </Directory>
+    </Directory>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="MainExecutable" Guid="B2C3D4E5-F6A7-8901-BCDE-F12345678901">
+        <File Id="SimpleAIAgentEXE" Source="..\build\Release\SimpleAIAgent.exe" KeyPath="yes" />
+        <Shortcut Id="StartMenuShortcut" Directory="ApplicationProgramsFolder"
+                  Name="Simple AI Agent" WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" IconIndex="0" Advertise="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Icon Id="AppIcon" SourceFile="..\build\Release\SimpleAIAgent.exe" />
+  </Product>
+</Wix>
