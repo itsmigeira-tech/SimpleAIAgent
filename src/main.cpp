@@ -23,14 +23,12 @@ struct Endpoint {
     const wchar_t* path;
 };
 
-// Short UI names. Each maps to preferred endpoints first, then full pool.
 struct ModelChoice {
     const wchar_t* display;
     int preferred[8];
     int preferredCount;
 };
 
-// Large free pool. No key.
 Endpoint g_endpoints[] = {
     { "gpt-oss:20b", L"api.llm7.io", 443, L"/v1/chat/completions" },
     { "default", L"api.llm7.io", 443, L"/v1/chat/completions" },
@@ -77,7 +75,6 @@ std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const st
     HINTERNET hSession = WinHttpOpen(L"SimpleAIAgent/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return "";
 
-    // Short timeouts so busy hosts fail fast and we try the next
     WinHttpSetTimeouts(hSession, 5000, 5000, 15000, 20000);
 
     HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), port, 0);
@@ -129,32 +126,94 @@ bool LooksLikeFail(const std::string& json) {
     return false;
 }
 
+std::wstring StripEmojis(const std::wstring& in) {
+    std::wstring out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ) {
+        wchar_t c = in[i];
+        // UTF-16 surrogate pair (most emojis)
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < in.size()) {
+            wchar_t c2 = in[i + 1];
+            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+                i += 2;
+                continue;
+            }
+        }
+        // Common emoji / symbol blocks in BMP
+        if ((c >= 0x2600 && c <= 0x27BF) ||
+            (c >= 0x2300 && c <= 0x23FF) ||
+            (c >= 0x2B00 && c <= 0x2BFF) ||
+            (c >= 0xFE00 && c <= 0xFE0F) ||
+            c == 0x200D || c == 0xFE0F) {
+            i++;
+            continue;
+        }
+        out.push_back(c);
+        i++;
+    }
+    // Collapse double spaces left by removed emojis
+    std::wstring cleaned;
+    cleaned.reserve(out.size());
+    bool prevSpace = false;
+    for (wchar_t c : out) {
+        if (c == L' ' || c == L'\t') {
+            if (!prevSpace) cleaned.push_back(L' ');
+            prevSpace = true;
+        } else {
+            cleaned.push_back(c);
+            prevSpace = false;
+        }
+    }
+    while (!cleaned.empty() && cleaned.front() == L' ') cleaned.erase(cleaned.begin());
+    while (!cleaned.empty() && cleaned.back() == L' ') cleaned.pop_back();
+    return cleaned;
+}
+
 std::wstring ExtractChatContent(const std::string& json) {
-    size_t pos = json.find("\"content\":\"");
+    // Prefer assistant message content field
+    size_t pos = json.rfind("\"content\":\"");
+    size_t keyLen = 12; // length of "content":"
     if (pos == std::string::npos) {
-        pos = json.find("\"content\": \"");
-        if (pos == std::string::npos) return L"";
-        pos += 13;
-    } else {
-        pos += 12;
+        pos = json.rfind("\"content\": \"");
+        if (pos == std::string::npos) {
+            pos = json.find("\"content\":\"");
+            if (pos == std::string::npos) {
+                pos = json.find("\"content\": \"");
+                if (pos == std::string::npos) return L"";
+                keyLen = 13; // "content": "
+            } else {
+                keyLen = 12;
+            }
+        } else {
+            keyLen = 13;
+        }
     }
-    size_t end = pos;
-    while (end < json.size()) {
-        if (json[end] == '"' && (end == 0 || json[end - 1] != '\\')) break;
-        end++;
+    pos += keyLen;
+
+    std::string text;
+    for (size_t i = pos; i < json.size(); i++) {
+        if (json[i] == '\\' && i + 1 < json.size()) {
+            char n = json[i + 1];
+            if (n == 'n') { text.push_back('\n'); i++; continue; }
+            if (n == 'r') { text.push_back('\r'); i++; continue; }
+            if (n == 't') { text.push_back('\t'); i++; continue; }
+            if (n == '"') { text.push_back('"'); i++; continue; }
+            if (n == '\\') { text.push_back('\\'); i++; continue; }
+            if (n == '/') { text.push_back('/'); i++; continue; }
+            if (n == 'u' && i + 5 < json.size()) {
+                // skip simple \uXXXX for now, keep raw hex letter later via utf8 path
+                text.push_back('\\');
+                continue;
+            }
+            text.push_back(json[i]);
+            continue;
+        }
+        if (json[i] == '"') break;
+        text.push_back(json[i]);
     }
-    std::string text = json.substr(pos, end - pos);
-    size_t p = 0;
-    while ((p = text.find("\\n", p)) != std::string::npos) {
-        text.replace(p, 2, "\n");
-        p += 1;
-    }
-    p = 0;
-    while ((p = text.find("\\\"", p)) != std::string::npos) {
-        text.replace(p, 2, "\"");
-        p += 1;
-    }
-    return Utf8ToWide(text);
+
+    std::wstring wide = Utf8ToWide(text);
+    return StripEmojis(wide);
 }
 
 void AppendOutput(const std::wstring& text) {
@@ -177,7 +236,7 @@ void LoadModels() {
     SetStatus(L"");
 }
 
-std::string BuildBody(const char* modelId, const std::string& promptUtf) {
+std::string BuildBody(const char* modelId, const std::string& promptUtf, const std::string& modelLabel) {
     auto escape = [](std::string s) {
         size_t p = 0;
         while ((p = s.find('\\', p)) != std::string::npos) {
@@ -196,7 +255,18 @@ std::string BuildBody(const char* modelId, const std::string& promptUtf) {
         }
         return s;
     };
-    return std::string("{\"model\":\"") + modelId + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + escape(promptUtf) + "\"}],\"stream\":false}";
+
+    std::string system =
+        "You are a helpful assistant in Simple AI Agent. "
+        "Reply in plain text only. Do not use emojis, emoticons, or decorative symbols. "
+        "Be clear and direct. "
+        "If asked what model you are, answer with: " + modelLabel + ".";
+
+    return std::string("{\"model\":\"") + modelId +
+        "\",\"messages\":["
+        "{\"role\":\"system\",\"content\":\"" + escape(system) + "\"},"
+        "{\"role\":\"user\",\"content\":\"" + escape(promptUtf) + "\"}"
+        "],\"stream\":false}";
 }
 
 void SendPrompt() {
@@ -214,9 +284,9 @@ void SendPrompt() {
     EnableWindow(hSend, FALSE);
 
     std::string promptUtf = WideToUtf8(prompt);
+    std::string modelLabel = WideToUtf8(g_models[sel].display);
     std::wstring answer;
 
-    // Build ordered try list: preferred first, then every other endpoint
     bool used[32] = {};
     int order[32];
     int orderCount = 0;
@@ -233,12 +303,11 @@ void SendPrompt() {
         if (!used[i]) order[orderCount++] = i;
     }
 
-    // Up to 2 full passes with short backoff
     for (int pass = 0; pass < 2 && answer.empty(); pass++) {
         if (pass > 0) Sleep(1200);
         for (int i = 0; i < orderCount; i++) {
             Endpoint& ep = g_endpoints[order[i]];
-            std::string body = BuildBody(ep.id, promptUtf);
+            std::string body = BuildBody(ep.id, promptUtf, modelLabel);
             std::string resp = HttpPostHttps(ep.host, ep.port, ep.path, body);
             if (LooksLikeFail(resp)) continue;
             answer = ExtractChatContent(resp);
