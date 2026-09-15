@@ -131,7 +131,6 @@ std::wstring StripEmojis(const std::wstring& in) {
     out.reserve(in.size());
     for (size_t i = 0; i < in.size(); ) {
         wchar_t c = in[i];
-        // UTF-16 surrogate pair (most emojis)
         if (c >= 0xD800 && c <= 0xDBFF && i + 1 < in.size()) {
             wchar_t c2 = in[i + 1];
             if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
@@ -139,7 +138,6 @@ std::wstring StripEmojis(const std::wstring& in) {
                 continue;
             }
         }
-        // Common emoji / symbol blocks in BMP
         if ((c >= 0x2600 && c <= 0x27BF) ||
             (c >= 0x2300 && c <= 0x23FF) ||
             (c >= 0x2B00 && c <= 0x2BFF) ||
@@ -151,7 +149,6 @@ std::wstring StripEmojis(const std::wstring& in) {
         out.push_back(c);
         i++;
     }
-    // Collapse double spaces left by removed emojis
     std::wstring cleaned;
     cleaned.reserve(out.size());
     bool prevSpace = false;
@@ -169,26 +166,78 @@ std::wstring StripEmojis(const std::wstring& in) {
     return cleaned;
 }
 
+// Robust extract: find "content" key, skip to value string, read full value
 std::wstring ExtractChatContent(const std::string& json) {
-    // Prefer assistant message content field
-    size_t pos = json.rfind("\"content\":\"");
-    size_t keyLen = 12; // length of "content":"
-    if (pos == std::string::npos) {
-        pos = json.rfind("\"content\": \"");
-        if (pos == std::string::npos) {
-            pos = json.find("\"content\":\"");
-            if (pos == std::string::npos) {
-                pos = json.find("\"content\": \"");
-                if (pos == std::string::npos) return L"";
-                keyLen = 13; // "content": "
-            } else {
-                keyLen = 12;
+    // Prefer the last "content" (assistant message is usually last)
+    size_t keyPos = std::string::npos;
+    size_t searchFrom = 0;
+    while (true) {
+        size_t p = json.find("\"content\"", searchFrom);
+        if (p == std::string::npos) break;
+        keyPos = p;
+        searchFrom = p + 1;
+    }
+    if (keyPos == std::string::npos) {
+        // raw search without extra escapes in pattern - actual bytes are "content"
+        searchFrom = 0;
+        while (true) {
+            size_t p = json.find("\"content\"", searchFrom);
+            if (p == std::string::npos) {
+                p = json.find("content", searchFrom);
+                if (p == std::string::npos) break;
+                // verify it looks like a JSON key
+                if (p > 0 && json[p - 1] == '"') keyPos = p - 1;
+                searchFrom = p + 1;
+                continue;
             }
-        } else {
-            keyLen = 13;
+            keyPos = p;
+            searchFrom = p + 1;
         }
     }
-    pos += keyLen;
+
+    // Direct byte search for the key including quotes as stored in JSON response
+    keyPos = std::string::npos;
+    searchFrom = 0;
+    while (true) {
+        size_t p = json.find("\"content\"", searchFrom);
+        if (p == std::string::npos) {
+            // JSON text contains: "content"
+            p = json.find("\"content\"", searchFrom);
+        }
+        // Search for quote-content-quote in actual response string
+        p = json.find("\"content\"", searchFrom);
+        if (p == std::string::npos) {
+            p = json.find("content", searchFrom);
+            if (p == std::string::npos) break;
+            if (p > 0 && json[p - 1] == '"' && p + 7 < json.size() && json[p + 7] == '"') {
+                keyPos = p - 1;
+            }
+            searchFrom = p + 1;
+            continue;
+        }
+        keyPos = p;
+        searchFrom = p + 1;
+    }
+
+    // Clean approach: scan for "content" as JSON key in the response bytes
+    keyPos = std::string::npos;
+    for (size_t i = 0; i + 9 < json.size(); i++) {
+        if (json[i] == '"' &&
+            json[i + 1] == 'c' && json[i + 2] == 'o' && json[i + 3] == 'n' &&
+            json[i + 4] == 't' && json[i + 5] == 'e' && json[i + 6] == 'n' &&
+            json[i + 7] == 't' && json[i + 8] == '"') {
+            keyPos = i;
+        }
+    }
+    if (keyPos == std::string::npos) return L"";
+
+    size_t pos = keyPos + 9; // after "content"
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    if (pos >= json.size() || json[pos] != ':') return L"";
+    pos++; // skip colon
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n' || json[pos] == '\r')) pos++;
+    if (pos >= json.size() || json[pos] != '"') return L"";
+    pos++; // skip opening quote of the value — first content char is next
 
     std::string text;
     for (size_t i = pos; i < json.size(); i++) {
@@ -200,11 +249,6 @@ std::wstring ExtractChatContent(const std::string& json) {
             if (n == '"') { text.push_back('"'); i++; continue; }
             if (n == '\\') { text.push_back('\\'); i++; continue; }
             if (n == '/') { text.push_back('/'); i++; continue; }
-            if (n == 'u' && i + 5 < json.size()) {
-                // skip simple \uXXXX for now, keep raw hex letter later via utf8 path
-                text.push_back('\\');
-                continue;
-            }
             text.push_back(json[i]);
             continue;
         }
@@ -212,8 +256,7 @@ std::wstring ExtractChatContent(const std::string& json) {
         text.push_back(json[i]);
     }
 
-    std::wstring wide = Utf8ToWide(text);
-    return StripEmojis(wide);
+    return StripEmojis(Utf8ToWide(text));
 }
 
 void AppendOutput(const std::wstring& text) {
