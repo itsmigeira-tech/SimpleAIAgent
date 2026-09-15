@@ -15,7 +15,6 @@
 #define ID_STATUS 105
 
 HWND hInput, hOutput, hSend, hModel, hStatus;
-std::wstring currentModel = L"Qwen3-32B";
 
 struct FreeModel {
     const wchar_t* display;
@@ -25,17 +24,18 @@ struct FreeModel {
     const wchar_t* path;
 };
 
-// Free models. No key. No signup. No download. No pay.
-// OVH anonymous (2 RPM) + LLM7 anonymous
+// Ordered by higher free rate first. No key. No signup.
+// LLM7 ~10 RPM | Kilo free pool ~200/hr | OVH ~2 RPM
 FreeModel g_models[] = {
+    { L"gpt-oss-20b (LLM7 ~10 RPM)", "gpt-oss:20b", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { L"Mistral-Nemo (LLM7 ~10 RPM)", "mistral-Nemo-Instruct-2407", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { L"default (LLM7 ~10 RPM)", "default", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { L"kilo-auto/free (~200/hr)", "kilo-auto/free", L"api.kilo.ai", 443, L"/api/gateway/chat/completions" },
     { L"Qwen3-32B (OVH)", "Qwen3-32B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
     { L"Qwen3.6-27B (OVH)", "Qwen3.6-27B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
-    { L"Qwen3-Coder-30B (OVH)", "Qwen3-Coder-30B-A3B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"Qwen3-Coder (OVH)", "Qwen3-Coder-30B-A3B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
     { L"DeepSeek-R1-Distill (OVH)", "DeepSeek-R1-Distill-Llama-70B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
     { L"Llama-3.3-70B (OVH)", "Meta-Llama-3_3-70B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
-    { L"gpt-oss-20b (LLM7)", "gpt-oss:20b", L"api.llm7.io", 443, L"/v1/chat/completions" },
-    { L"Mistral-Nemo (LLM7)", "mistral-Nemo-Instruct-2407", L"api.llm7.io", 443, L"/v1/chat/completions" },
-    { L"default (LLM7)", "default", L"api.llm7.io", 443, L"/v1/chat/completions" },
 };
 const int g_modelCount = sizeof(g_models) / sizeof(g_models[0]);
 
@@ -74,7 +74,6 @@ std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const st
         return "";
     }
 
-    // No API key. Anonymous access only.
     std::wstring headers = L"Content-Type: application/json\r\n";
     BOOL bResults = WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(), (LPVOID)body.c_str(), (DWORD)body.size(), (DWORD)body.size(), 0);
     if (bResults) bResults = WinHttpReceiveResponse(hRequest, NULL);
@@ -101,12 +100,20 @@ std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const st
     return response;
 }
 
+bool LooksLikeRateLimit(const std::string& json) {
+    if (json.find("429") != std::string::npos) return true;
+    if (json.find("rate limit") != std::string::npos) return true;
+    if (json.find("Rate limit") != std::string::npos) return true;
+    if (json.find("too many requests") != std::string::npos) return true;
+    if (json.empty()) return true;
+    return false;
+}
+
 std::wstring ExtractChatContent(const std::string& json) {
-    // Look for "content":"..." inside choices
     size_t pos = json.find("\"content\":\"");
     if (pos == std::string::npos) {
         pos = json.find("\"content\": \"");
-        if (pos == std::string::npos) return L"No response. Endpoint busy or rate limited. Try another model.";
+        if (pos == std::string::npos) return L"";
         pos += 13;
     } else {
         pos += 12;
@@ -125,11 +132,6 @@ std::wstring ExtractChatContent(const std::string& json) {
     p = 0;
     while ((p = text.find("\\\"", p)) != std::string::npos) {
         text.replace(p, 2, "\"");
-        p += 1;
-    }
-    p = 0;
-    while ((p = text.find("\\\\", p)) != std::string::npos) {
-        text.replace(p, 2, "\\");
         p += 1;
     }
     return Utf8ToWide(text);
@@ -152,8 +154,7 @@ void LoadModels() {
         SendMessageW(hModel, CB_ADDSTRING, 0, (LPARAM)g_models[i].display);
     }
     SendMessageW(hModel, CB_SETCURSEL, 0, 0);
-    currentModel = g_models[0].display;
-    SetStatus(L"Free models ready. No key needed.");
+    SetStatus(L"Ready. Higher rate models listed first.");
 }
 
 void SendPrompt() {
@@ -164,8 +165,6 @@ void SendPrompt() {
 
     int sel = (int)SendMessageW(hModel, CB_GETCURSEL, 0, 0);
     if (sel < 0 || sel >= g_modelCount) sel = 0;
-
-    FreeModel& m = g_models[sel];
 
     AppendOutput(L"\r\nYou: " + prompt + L"\r\n");
     SetWindowTextW(hInput, L"");
@@ -192,11 +191,35 @@ void SendPrompt() {
         return s;
     };
 
-    // OpenAI-compatible chat body. No api_key field.
-    std::string body = "{\"model\":\"" + std::string(m.id) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + escape(promptUtf) + "\"}],\"stream\":false}";
+    std::wstring answer;
+    // Try selected model first, then fall back to others on rate limit
+    for (int attempt = 0; attempt < g_modelCount; attempt++) {
+        int idx = (sel + attempt) % g_modelCount;
+        FreeModel& m = g_models[idx];
 
-    std::string resp = HttpPostHttps(m.host, m.port, m.path, body);
-    std::wstring answer = ExtractChatContent(resp);
+        if (attempt > 0) {
+            SetStatus((L"Rate limited. Trying " + std::wstring(m.display)).c_str());
+            Sleep(800);
+        }
+
+        std::string body = "{\"model\":\"" + std::string(m.id) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + escape(promptUtf) + "\"}],\"stream\":false}";
+        std::string resp = HttpPostHttps(m.host, m.port, m.path, body);
+
+        if (LooksLikeRateLimit(resp)) continue;
+
+        answer = ExtractChatContent(resp);
+        if (!answer.empty()) {
+            if (attempt > 0) {
+                AppendOutput(L"(used fallback: " + std::wstring(m.display) + L")\r\n");
+            }
+            break;
+        }
+    }
+
+    if (answer.empty()) {
+        answer = L"All free endpoints are busy or rate limited. Wait ~30s and try again.";
+    }
+
     AppendOutput(L"Agent: " + answer + L"\r\n");
     SetStatus(L"Ready");
     EnableWindow(hSend, TRUE);
@@ -240,7 +263,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         CreateWindowW(L"STATIC", L"Model:", WS_CHILD | WS_VISIBLE,
             20, 45, 50, 20, hwnd, NULL, NULL, NULL);
         hModel = CreateWindowW(L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-            80, 42, 280, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
+            80, 42, 320, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
 
         hOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
@@ -266,7 +289,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SendMessageW(hStatus, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         LoadModels();
-        AppendOutput(L"Welcome. Free models. No API key. No signup. No download.\r\nPick a model and send a message.\r\n");
+        AppendOutput(L"Welcome. Free models. No API key.\r\nHigher rate models are listed first.\r\nAuto-fallback on rate limit.\r\n");
         break;
     }
     case WM_COMMAND:

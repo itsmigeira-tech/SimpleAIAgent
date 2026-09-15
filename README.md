@@ -2,8 +2,6 @@
 
 Free C++ chat agent. No API key. No signup. No download. No pay.
 
-Uses public free endpoints (OVH + LLM7) with Qwen and DeepSeek-style models.
-
 ## Build EXE
 
 Need Visual Studio + CMake.
@@ -18,14 +16,13 @@ cmake --build . --config Release
 
 Run `build/Release/SimpleAIAgent.exe`
 
-## Models
+## Rate limits (improved)
 
-- Qwen3-32B / Qwen3.6-27B / Qwen3-Coder (OVH)
-- DeepSeek-R1-Distill (OVH)
-- Llama-3.3-70B (OVH)
-- gpt-oss-20b / Mistral-Nemo (LLM7)
+- LLM7 models: about 10 requests per minute
+- Kilo free pool: about 200 requests per hour
+- OVH models: about 2 requests per minute
 
-Rate limits exist (about 2 requests per minute on OVH anonymous). Switch model if one is busy.
+Higher rate models are listed first. If one hits a limit the agent auto-tries the next.
 
 ## MSI
 
