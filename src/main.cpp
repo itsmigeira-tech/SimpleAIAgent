@@ -15,7 +15,29 @@
 #define ID_STATUS 105
 
 HWND hInput, hOutput, hSend, hModel, hStatus;
-std::wstring currentModel = L"llama3.2";
+std::wstring currentModel = L"Qwen3-32B";
+
+struct FreeModel {
+    const wchar_t* display;
+    const char* id;
+    const wchar_t* host;
+    INTERNET_PORT port;
+    const wchar_t* path;
+};
+
+// Free models. No key. No signup. No download. No pay.
+// OVH anonymous (2 RPM) + LLM7 anonymous
+FreeModel g_models[] = {
+    { L"Qwen3-32B (OVH)", "Qwen3-32B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"Qwen3.6-27B (OVH)", "Qwen3.6-27B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"Qwen3-Coder-30B (OVH)", "Qwen3-Coder-30B-A3B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"DeepSeek-R1-Distill (OVH)", "DeepSeek-R1-Distill-Llama-70B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"Llama-3.3-70B (OVH)", "Meta-Llama-3_3-70B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"gpt-oss-20b (LLM7)", "gpt-oss:20b", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { L"Mistral-Nemo (LLM7)", "mistral-Nemo-Instruct-2407", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { L"default (LLM7)", "default", L"api.llm7.io", 443, L"/v1/chat/completions" },
+};
+const int g_modelCount = sizeof(g_models) / sizeof(g_models[0]);
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -35,7 +57,7 @@ std::wstring Utf8ToWide(const std::string& s) {
     return w;
 }
 
-std::string HttpPost(const std::wstring& host, INTERNET_PORT port, const std::wstring& path, const std::string& body) {
+std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const std::wstring& path, const std::string& body) {
     HINTERNET hSession = WinHttpOpen(L"SimpleAIAgent/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return "";
 
@@ -45,13 +67,14 @@ std::string HttpPost(const std::wstring& host, INTERNET_PORT port, const std::ws
         return "";
     }
 
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
     if (!hRequest) {
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return "";
     }
 
+    // No API key. Anonymous access only.
     std::wstring headers = L"Content-Type: application/json\r\n";
     BOOL bResults = WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(), (LPVOID)body.c_str(), (DWORD)body.size(), (DWORD)body.size(), 0);
     if (bResults) bResults = WinHttpReceiveResponse(hRequest, NULL);
@@ -78,18 +101,19 @@ std::string HttpPost(const std::wstring& host, INTERNET_PORT port, const std::ws
     return response;
 }
 
-std::wstring ExtractResponse(const std::string& json) {
-    size_t pos = json.find("\"response\":\"");
+std::wstring ExtractChatContent(const std::string& json) {
+    // Look for "content":"..." inside choices
+    size_t pos = json.find("\"content\":\"");
     if (pos == std::string::npos) {
-        pos = json.find("\"content\":\"");
-        if (pos == std::string::npos) return L"No response from model. Is Ollama running?";
-        pos += 11;
+        pos = json.find("\"content\": \"");
+        if (pos == std::string::npos) return L"No response. Endpoint busy or rate limited. Try another model.";
+        pos += 13;
     } else {
         pos += 12;
     }
     size_t end = pos;
     while (end < json.size()) {
-        if (json[end] == '"' && json[end - 1] != '\\') break;
+        if (json[end] == '"' && (end == 0 || json[end - 1] != '\\')) break;
         end++;
     }
     std::string text = json.substr(pos, end - pos);
@@ -101,6 +125,11 @@ std::wstring ExtractResponse(const std::string& json) {
     p = 0;
     while ((p = text.find("\\\"", p)) != std::string::npos) {
         text.replace(p, 2, "\"");
+        p += 1;
+    }
+    p = 0;
+    while ((p = text.find("\\\\", p)) != std::string::npos) {
+        text.replace(p, 2, "\\");
         p += 1;
     }
     return Utf8ToWide(text);
@@ -118,62 +147,13 @@ void SetStatus(const std::wstring& text) {
 }
 
 void LoadModels() {
-    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-    HANDLE hRead, hWrite;
-    CreatePipe(&hRead, &hWrite, &sa, 0);
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOW si = { sizeof(si) };
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = hWrite;
-    si.hStdError = hWrite;
-    PROCESS_INFORMATION pi = {};
-
-    wchar_t cmd[] = L"ollama list";
-    if (CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        CloseHandle(hWrite);
-        WaitForSingleObject(pi.hProcess, 3000);
-        char buffer[4096] = {};
-        DWORD read = 0;
-        ReadFile(hRead, buffer, sizeof(buffer) - 1, &read, NULL);
-        CloseHandle(hRead);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-
-        std::string out(buffer, read);
-        std::istringstream iss(out);
-        std::string line;
-        bool first = true;
-        SendMessageW(hModel, CB_RESETCONTENT, 0, 0);
-        while (std::getline(iss, line)) {
-            if (first) { first = false; continue; }
-            if (line.empty()) continue;
-            size_t sp = line.find(' ');
-            if (sp == std::string::npos) sp = line.find('\t');
-            std::string name = (sp != std::string::npos) ? line.substr(0, sp) : line;
-            if (!name.empty()) {
-                std::wstring wname = Utf8ToWide(name);
-                SendMessageW(hModel, CB_ADDSTRING, 0, (LPARAM)wname.c_str());
-            }
-        }
-        if (SendMessageW(hModel, CB_GETCOUNT, 0, 0) > 0) {
-            SendMessageW(hModel, CB_SETCURSEL, 0, 0);
-            wchar_t buf[128] = {};
-            SendMessageW(hModel, CB_GETLBTEXT, 0, (LPARAM)buf);
-            currentModel = buf;
-            SetStatus(L"Models loaded from Ollama");
-        } else {
-            SendMessageW(hModel, CB_ADDSTRING, 0, (LPARAM)L"llama3.2");
-            SendMessageW(hModel, CB_SETCURSEL, 0, 0);
-            SetStatus(L"Ollama not found or no models. Using default.");
-        }
-    } else {
-        CloseHandle(hWrite);
-        CloseHandle(hRead);
-        SendMessageW(hModel, CB_ADDSTRING, 0, (LPARAM)L"llama3.2");
-        SendMessageW(hModel, CB_SETCURSEL, 0, 0);
-        SetStatus(L"Ollama not in PATH. Start Ollama and ensure models installed.");
+    SendMessageW(hModel, CB_RESETCONTENT, 0, 0);
+    for (int i = 0; i < g_modelCount; i++) {
+        SendMessageW(hModel, CB_ADDSTRING, 0, (LPARAM)g_models[i].display);
     }
+    SendMessageW(hModel, CB_SETCURSEL, 0, 0);
+    currentModel = g_models[0].display;
+    SetStatus(L"Free models ready. No key needed.");
 }
 
 void SendPrompt() {
@@ -182,32 +162,41 @@ void SendPrompt() {
     std::wstring prompt = inputBuf;
     if (prompt.empty()) return;
 
-    wchar_t modelBuf[128] = {};
     int sel = (int)SendMessageW(hModel, CB_GETCURSEL, 0, 0);
-    if (sel != CB_ERR) {
-        SendMessageW(hModel, CB_GETLBTEXT, sel, (LPARAM)modelBuf);
-        currentModel = modelBuf;
-    }
+    if (sel < 0 || sel >= g_modelCount) sel = 0;
+
+    FreeModel& m = g_models[sel];
 
     AppendOutput(L"\r\nYou: " + prompt + L"\r\n");
     SetWindowTextW(hInput, L"");
     SetStatus(L"Thinking...");
     EnableWindow(hSend, FALSE);
 
-    std::string modelUtf = WideToUtf8(currentModel);
     std::string promptUtf = WideToUtf8(prompt);
     auto escape = [](std::string s) {
         size_t p = 0;
+        while ((p = s.find('\\', p)) != std::string::npos) {
+            s.replace(p, 1, "\\\\");
+            p += 2;
+        }
+        p = 0;
         while ((p = s.find('"', p)) != std::string::npos) {
             s.replace(p, 1, "\\\"");
             p += 2;
         }
+        p = 0;
+        while ((p = s.find('\n', p)) != std::string::npos) {
+            s.replace(p, 1, "\\n");
+            p += 2;
+        }
         return s;
     };
-    std::string body = "{\"model\":\"" + escape(modelUtf) + "\",\"prompt\":\"" + escape(promptUtf) + "\",\"stream\":false}";
 
-    std::string resp = HttpPost(L"localhost", 11434, L"/api/generate", body);
-    std::wstring answer = ExtractResponse(resp);
+    // OpenAI-compatible chat body. No api_key field.
+    std::string body = "{\"model\":\"" + std::string(m.id) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + escape(promptUtf) + "\"}],\"stream\":false}";
+
+    std::string resp = HttpPostHttps(m.host, m.port, m.path, body);
+    std::wstring answer = ExtractChatContent(resp);
     AppendOutput(L"Agent: " + answer + L"\r\n");
     SetStatus(L"Ready");
     EnableWindow(hSend, TRUE);
@@ -245,13 +234,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
-        CreateWindowW(L"STATIC", L"Local AI Agent (Ollama)", WS_CHILD | WS_VISIBLE,
+        CreateWindowW(L"STATIC", L"Free AI Agent (no key)", WS_CHILD | WS_VISIBLE,
             20, 15, 300, 20, hwnd, NULL, NULL, NULL);
 
         CreateWindowW(L"STATIC", L"Model:", WS_CHILD | WS_VISIBLE,
             20, 45, 50, 20, hwnd, NULL, NULL, NULL);
         hModel = CreateWindowW(L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-            80, 42, 200, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
+            80, 42, 280, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
 
         hOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
@@ -277,7 +266,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SendMessageW(hStatus, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         LoadModels();
-        AppendOutput(L"Welcome. Type a message and press Send.\r\nUses models already installed in Ollama.\r\n");
+        AppendOutput(L"Welcome. Free models. No API key. No signup. No download.\r\nPick a model and send a message.\r\n");
         break;
     }
     case WM_COMMAND:
