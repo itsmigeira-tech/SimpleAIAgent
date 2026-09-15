@@ -19,8 +19,9 @@
 #define ID_SEND 103
 #define ID_MODEL 104
 #define ID_LABEL 106
+#define ID_CHAT 107
 
-HWND hInput, hOutput, hSend, hModel, hLabel;
+HWND hInput, hOutput, hSend, hModel, hLabel, hChat;
 HBRUSH hBrushWindow = NULL;
 
 struct Endpoint {
@@ -131,7 +132,6 @@ std::string MulBig(const std::string& a, const std::string& b) {
     return TrimDigits(r);
 }
 
-// Exact local math for prompts that are mainly a + b, a - b, or a * b
 bool TryLocalMath(const std::wstring& prompt, std::wstring& out) {
     std::string s;
     for (wchar_t c : prompt) {
@@ -140,12 +140,11 @@ bool TryLocalMath(const std::wstring& prompt, std::wstring& out) {
         else if (c == L'x' || c == L'X') s.push_back('*');
         else if (c == L'-') s.push_back('-');
         else if (c == L' ' || c == L'\t' || c == L'?' || c == L'=' || c == L',') continue;
-        else if ((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z')) continue; // allow "what is"
+        else if ((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z')) continue;
         else return false;
     }
     if (s.empty()) return false;
 
-    // Find the single operator (prefer last if leading minus on first number)
     char op = 0;
     size_t opPos = std::string::npos;
     for (size_t i = 0; i < s.size(); i++) {
@@ -400,7 +399,6 @@ void SendPrompt() {
 
     std::wstring answer;
 
-    // Exact local math first so large numbers are never guessed by the model
     if (TryLocalMath(prompt, answer)) {
         AppendOutput(L"Agent: " + answer + L"\r\n");
         EnableWindow(hSend, TRUE);
@@ -461,7 +459,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     RegisterClassExW(&wc);
 
     HWND hwnd = CreateWindowExW(0, L"SimpleAIAgentClass", L"Simple AI Agent",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 720, 500,
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 720, 520,
         NULL, NULL, hInstance, NULL);
 
     ShowWindow(hwnd, nCmdShow);
@@ -486,19 +484,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
             75, 14, 180, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
 
+        // One chat panel border. Messages + input + Send live inside it.
+        hChat = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
+            WS_CHILD | WS_VISIBLE,
+            20, 48, 660, 420, hwnd, (HMENU)ID_CHAT, NULL, NULL);
+
         hOutput = CreateWindowExW(0, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_BORDER,
-            20, 48, 660, 310, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+            28, 56, 644, 360, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
 
         hInput = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_BORDER,
-            20, 370, 540, 28, hwnd, (HMENU)ID_INPUT, NULL, NULL);
+            28, 424, 530, 28, hwnd, (HMENU)ID_INPUT, NULL, NULL);
 
         SendMessageW(hInput, EM_SETCUEBANNER, TRUE, (LPARAM)L"Ask Anything...");
 
         hSend = CreateWindowW(L"BUTTON", L"Send",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            580, 368, 100, 32, hwnd, (HMENU)ID_SEND, NULL, NULL);
+            568, 422, 100, 32, hwnd, (HMENU)ID_SEND, NULL, NULL);
+
+        // Keep input/send above the chat frame
+        SetWindowPos(hOutput, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        SetWindowPos(hInput, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        SetWindowPos(hSend, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
         HFONT hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -535,9 +543,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
         int w = LOWORD(lParam);
         int h = HIWORD(lParam);
-        if (hOutput) MoveWindow(hOutput, 20, 48, w - 40, h - 120, TRUE);
-        if (hInput) MoveWindow(hInput, 20, h - 60, w - 160, 28, TRUE);
-        if (hSend) MoveWindow(hSend, w - 120, h - 62, 100, 32, TRUE);
+        int left = 20;
+        int top = 48;
+        int panelW = w - 40;
+        int panelH = h - 68;
+        if (panelW < 200) panelW = 200;
+        if (panelH < 160) panelH = 160;
+
+        if (hChat) MoveWindow(hChat, left, top, panelW, panelH, TRUE);
+
+        int pad = 8;
+        int inputH = 28;
+        int sendW = 100;
+        int sendH = 32;
+        int gap = 8;
+
+        int innerL = left + pad;
+        int innerT = top + pad;
+        int innerW = panelW - pad * 2;
+        int inputY = top + panelH - pad - inputH;
+        int outputH = inputY - gap - innerT;
+        if (outputH < 40) outputH = 40;
+
+        if (hOutput) MoveWindow(hOutput, innerL, innerT, innerW, outputH, TRUE);
+        if (hInput) MoveWindow(hInput, innerL, inputY, innerW - sendW - gap, inputH, TRUE);
+        if (hSend) MoveWindow(hSend, innerL + innerW - sendW, inputY - 2, sendW, sendH, TRUE);
         break;
     }
     case WM_DESTROY:
