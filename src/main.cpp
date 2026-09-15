@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <algorithm>
 #include <commctrl.h>
 #include <cctype>
 
@@ -77,7 +78,6 @@ std::wstring Utf8ToWide(const std::string& s) {
     return w;
 }
 
-// ----- Local exact integer math (digit strings) -----
 std::string TrimDigits(std::string s) {
     size_t i = 0;
     while (i + 1 < s.size() && s[i] == '0') i++;
@@ -99,7 +99,6 @@ std::string AddBig(const std::string& a, const std::string& b) {
 }
 
 std::string SubBig(std::string a, std::string b) {
-    // assumes a >= b, both non-negative digit strings
     int i = (int)a.size() - 1, j = (int)b.size() - 1, borrow = 0;
     std::string r;
     while (i >= 0) {
@@ -132,23 +131,31 @@ std::string MulBig(const std::string& a, const std::string& b) {
     return TrimDigits(r);
 }
 
+// Exact local math for prompts that are mainly a + b, a - b, or a * b
 bool TryLocalMath(const std::wstring& prompt, std::wstring& out) {
-    // Accept prompts that are only digits, spaces, and one of + - *
     std::string s;
     for (wchar_t c : prompt) {
         if (c >= L'0' && c <= L'9') s.push_back((char)c);
-        else if (c == L'+' || c == L'-' || c == L'*' || c == L'x' || c == L'X') s.push_back(c == L'x' || c == L'X' ? '*' : (char)c);
-        else if (c == L' ' || c == L'\t' || c == L'?' || c == L'=') continue;
+        else if (c == L'+' || c == L'*') s.push_back((char)c);
+        else if (c == L'x' || c == L'X') s.push_back('*');
+        else if (c == L'-') s.push_back('-');
+        else if (c == L' ' || c == L'\t' || c == L'?' || c == L'=' || c == L',') continue;
+        else if ((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z')) continue; // allow "what is"
         else return false;
     }
     if (s.empty()) return false;
 
+    // Find the single operator (prefer last if leading minus on first number)
     char op = 0;
     size_t opPos = std::string::npos;
     for (size_t i = 0; i < s.size(); i++) {
-        if (s[i] == '+' || s[i] == '*' || (s[i] == '-' && i > 0)) {
-            if (op != 0) return false; // only one operator
+        if (s[i] == '+' || s[i] == '*') {
+            if (op != 0) return false;
             op = s[i];
+            opPos = i;
+        } else if (s[i] == '-' && i > 0) {
+            if (op != 0) return false;
+            op = '-';
             opPos = i;
         }
     }
@@ -161,13 +168,11 @@ bool TryLocalMath(const std::wstring& prompt, std::wstring& out) {
     for (char c : right) if (c < '0' || c > '9') return false;
 
     std::string result;
-    if (op == '+') {
-        result = AddBig(left, right);
-    } else if (op == '-') {
+    if (op == '+') result = AddBig(left, right);
+    else if (op == '-') {
         if (GreaterEq(left, right)) result = SubBig(left, right);
         else result = "-" + SubBig(right, left);
     } else if (op == '*') {
-        // keep product length reasonable
         if (left.size() + right.size() > 200) return false;
         result = MulBig(left, right);
     } else return false;
@@ -395,7 +400,7 @@ void SendPrompt() {
 
     std::wstring answer;
 
-    // Exact local math for simple + - * on digit strings
+    // Exact local math first so large numbers are never guessed by the model
     if (TryLocalMath(prompt, answer)) {
         AppendOutput(L"Agent: " + answer + L"\r\n");
         EnableWindow(hSend, TRUE);
