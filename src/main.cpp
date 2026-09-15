@@ -12,9 +12,10 @@
 #define ID_OUTPUT 102
 #define ID_SEND 103
 #define ID_MODEL 104
-#define ID_STATUS 105
+#define ID_LABEL 106
 
-HWND hInput, hOutput, hSend, hModel, hStatus;
+HWND hInput, hOutput, hSend, hModel, hLabel;
+HBRUSH hBrushWindow = NULL;
 
 struct Endpoint {
     const char* id;
@@ -74,21 +75,13 @@ std::wstring Utf8ToWide(const std::string& s) {
 std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const std::wstring& path, const std::string& body) {
     HINTERNET hSession = WinHttpOpen(L"SimpleAIAgent/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return "";
-
     WinHttpSetTimeouts(hSession, 5000, 5000, 15000, 20000);
 
     HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), port, 0);
-    if (!hConnect) {
-        WinHttpCloseHandle(hSession);
-        return "";
-    }
+    if (!hConnect) { WinHttpCloseHandle(hSession); return ""; }
 
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return "";
-    }
+    if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return ""; }
 
     std::wstring headers = L"Content-Type: application/json\r\n";
     BOOL bResults = WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(), (LPVOID)body.c_str(), (DWORD)body.size(), (DWORD)body.size(), 0);
@@ -133,94 +126,73 @@ std::wstring StripEmojis(const std::wstring& in) {
         wchar_t c = in[i];
         if (c >= 0xD800 && c <= 0xDBFF && i + 1 < in.size()) {
             wchar_t c2 = in[i + 1];
-            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
-                i += 2;
-                continue;
-            }
+            if (c2 >= 0xDC00 && c2 <= 0xDFFF) { i += 2; continue; }
         }
-        if ((c >= 0x2600 && c <= 0x27BF) ||
-            (c >= 0x2300 && c <= 0x23FF) ||
-            (c >= 0x2B00 && c <= 0x2BFF) ||
-            (c >= 0xFE00 && c <= 0xFE0F) ||
-            c == 0x200D || c == 0xFE0F) {
-            i++;
-            continue;
-        }
+        if ((c >= 0x2600 && c <= 0x27BF) || (c >= 0x2300 && c <= 0x23FF) ||
+            (c >= 0x2B00 && c <= 0x2BFF) || (c >= 0xFE00 && c <= 0xFE0F) ||
+            c == 0x200D || c == 0xFE0F) { i++; continue; }
         out.push_back(c);
         i++;
     }
-    std::wstring cleaned;
-    cleaned.reserve(out.size());
-    bool prevSpace = false;
-    for (wchar_t c : out) {
-        if (c == L' ' || c == L'\t') {
-            if (!prevSpace) cleaned.push_back(L' ');
-            prevSpace = true;
-        } else {
-            cleaned.push_back(c);
-            prevSpace = false;
-        }
-    }
-    while (!cleaned.empty() && cleaned.front() == L' ') cleaned.erase(cleaned.begin());
-    while (!cleaned.empty() && cleaned.back() == L' ') cleaned.pop_back();
-    return cleaned;
+    return out;
 }
 
-// Robust extract: find "content" key, skip to value string, read full value
+void ReplaceAll(std::wstring& s, const std::wstring& from, const std::wstring& to) {
+    size_t p = 0;
+    while ((p = s.find(from, p)) != std::wstring::npos) {
+        s.replace(p, from.size(), to);
+        p += to.size();
+    }
+}
+
+std::wstring CleanReply(std::wstring s) {
+    // Remove think / reasoning tags and leftovers
+    ReplaceAll(s, L"</think>", L"");
+    ReplaceAll(s, L"<think>", L"");
+    ReplaceAll(s, L"</redacted_thinking>", L"");
+    ReplaceAll(s, L"<redacted_thinking>", L"");
+    ReplaceAll(s, L"</reasoning>", L"");
+    ReplaceAll(s, L"<reasoning>", L"");
+
+    // If multiple answers were glued, keep the last non-empty segment
+    // Split on repeated greeting patterns by taking text after last tag residue
+    size_t lastBreak = s.find_last_of(L"\n");
+    // Prefer the final paragraph if the model dumped several replies
+    std::vector<std::wstring> parts;
+    std::wstring cur;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == L'\n') {
+            // keep newlines inside one block
+            cur.push_back(L'\n');
+        } else {
+            cur.push_back(s[i]);
+        }
+    }
+    // Collapse runs of blank lines
+    std::wstring out;
+    bool prevBlank = false;
+    for (size_t i = 0; i < s.size(); i++) {
+        wchar_t c = s[i];
+        if (c == L'\r') continue;
+        if (c == L'\n') {
+            if (!prevBlank) out.push_back(c);
+            prevBlank = true;
+        } else {
+            out.push_back(c);
+            prevBlank = false;
+        }
+    }
+    s = out;
+
+    // Trim
+    while (!s.empty() && (s.front() == L' ' || s.front() == L'\n' || s.front() == L'\t')) s.erase(s.begin());
+    while (!s.empty() && (s.back() == L' ' || s.back() == L'\n' || s.back() == L'\t')) s.pop_back();
+
+    return StripEmojis(s);
+}
+
 std::wstring ExtractChatContent(const std::string& json) {
-    // Prefer the last "content" (assistant message is usually last)
     size_t keyPos = std::string::npos;
-    size_t searchFrom = 0;
-    while (true) {
-        size_t p = json.find("\"content\"", searchFrom);
-        if (p == std::string::npos) break;
-        keyPos = p;
-        searchFrom = p + 1;
-    }
-    if (keyPos == std::string::npos) {
-        // raw search without extra escapes in pattern - actual bytes are "content"
-        searchFrom = 0;
-        while (true) {
-            size_t p = json.find("\"content\"", searchFrom);
-            if (p == std::string::npos) {
-                p = json.find("content", searchFrom);
-                if (p == std::string::npos) break;
-                // verify it looks like a JSON key
-                if (p > 0 && json[p - 1] == '"') keyPos = p - 1;
-                searchFrom = p + 1;
-                continue;
-            }
-            keyPos = p;
-            searchFrom = p + 1;
-        }
-    }
-
-    // Direct byte search for the key including quotes as stored in JSON response
-    keyPos = std::string::npos;
-    searchFrom = 0;
-    while (true) {
-        size_t p = json.find("\"content\"", searchFrom);
-        if (p == std::string::npos) {
-            // JSON text contains: "content"
-            p = json.find("\"content\"", searchFrom);
-        }
-        // Search for quote-content-quote in actual response string
-        p = json.find("\"content\"", searchFrom);
-        if (p == std::string::npos) {
-            p = json.find("content", searchFrom);
-            if (p == std::string::npos) break;
-            if (p > 0 && json[p - 1] == '"' && p + 7 < json.size() && json[p + 7] == '"') {
-                keyPos = p - 1;
-            }
-            searchFrom = p + 1;
-            continue;
-        }
-        keyPos = p;
-        searchFrom = p + 1;
-    }
-
-    // Clean approach: scan for "content" as JSON key in the response bytes
-    keyPos = std::string::npos;
     for (size_t i = 0; i + 9 < json.size(); i++) {
         if (json[i] == '"' &&
             json[i + 1] == 'c' && json[i + 2] == 'o' && json[i + 3] == 'n' &&
@@ -231,13 +203,13 @@ std::wstring ExtractChatContent(const std::string& json) {
     }
     if (keyPos == std::string::npos) return L"";
 
-    size_t pos = keyPos + 9; // after "content"
+    size_t pos = keyPos + 9;
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
     if (pos >= json.size() || json[pos] != ':') return L"";
-    pos++; // skip colon
+    pos++;
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n' || json[pos] == '\r')) pos++;
     if (pos >= json.size() || json[pos] != '"') return L"";
-    pos++; // skip opening quote of the value — first content char is next
+    pos++;
 
     std::string text;
     for (size_t i = pos; i < json.size(); i++) {
@@ -256,7 +228,7 @@ std::wstring ExtractChatContent(const std::string& json) {
         text.push_back(json[i]);
     }
 
-    return StripEmojis(Utf8ToWide(text));
+    return CleanReply(Utf8ToWide(text));
 }
 
 void AppendOutput(const std::wstring& text) {
@@ -266,43 +238,31 @@ void AppendOutput(const std::wstring& text) {
     SendMessageW(hOutput, EM_SCROLLCARET, 0, 0);
 }
 
-void SetStatus(const std::wstring& text) {
-    SetWindowTextW(hStatus, text.c_str());
-}
-
 void LoadModels() {
     SendMessageW(hModel, CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < g_modelCount; i++) {
         SendMessageW(hModel, CB_ADDSTRING, 0, (LPARAM)g_models[i].display);
     }
     SendMessageW(hModel, CB_SETCURSEL, 0, 0);
-    SetStatus(L"");
 }
 
 std::string BuildBody(const char* modelId, const std::string& promptUtf, const std::string& modelLabel) {
     auto escape = [](std::string s) {
         size_t p = 0;
-        while ((p = s.find('\\', p)) != std::string::npos) {
-            s.replace(p, 1, "\\\\");
-            p += 2;
-        }
+        while ((p = s.find('\\', p)) != std::string::npos) { s.replace(p, 1, "\\\\"); p += 2; }
         p = 0;
-        while ((p = s.find('"', p)) != std::string::npos) {
-            s.replace(p, 1, "\\\"");
-            p += 2;
-        }
+        while ((p = s.find('"', p)) != std::string::npos) { s.replace(p, 1, "\\\""); p += 2; }
         p = 0;
-        while ((p = s.find('\n', p)) != std::string::npos) {
-            s.replace(p, 1, "\\n");
-            p += 2;
-        }
+        while ((p = s.find('\n', p)) != std::string::npos) { s.replace(p, 1, "\\n"); p += 2; }
         return s;
     };
 
     std::string system =
         "You are a helpful assistant in Simple AI Agent. "
-        "Reply in plain text only. Do not use emojis, emoticons, or decorative symbols. "
-        "Be clear and direct. "
+        "Reply in plain text only. Never use emojis. "
+        "Never output tags like </think> or <think>. "
+        "Give one short answer only. Do not repeat yourself. "
+        "For simple math, answer with the number and one short sentence. "
         "If asked what model you are, answer with: " + modelLabel + ".";
 
     return std::string("{\"model\":\"") + modelId +
@@ -323,7 +283,6 @@ void SendPrompt() {
 
     AppendOutput(L"\r\nYou: " + prompt + L"\r\n");
     SetWindowTextW(hInput, L"");
-    SetStatus(L"...");
     EnableWindow(hSend, FALSE);
 
     std::string promptUtf = WideToUtf8(prompt);
@@ -358,12 +317,9 @@ void SendPrompt() {
         }
     }
 
-    if (answer.empty()) {
-        answer = L"All backends busy. Wait 20s and send again.";
-    }
+    if (answer.empty()) answer = L"All backends busy. Wait 20s and send again.";
 
     AppendOutput(L"Agent: " + answer + L"\r\n");
-    SetStatus(L"");
     EnableWindow(hSend, TRUE);
 }
 
@@ -371,18 +327,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_WIN95_CLASSES };
     InitCommonControlsEx(&icc);
 
+    hBrushWindow = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
+
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = hBrushWindow;
     wc.lpszClassName = L"SimpleAIAgentClass";
     wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     RegisterClassExW(&wc);
 
     HWND hwnd = CreateWindowExW(0, L"SimpleAIAgentClass", L"Simple AI Agent",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 720, 520,
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 720, 500,
         NULL, NULL, hInstance, NULL);
 
     ShowWindow(hwnd, nCmdShow);
@@ -399,24 +357,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
-        CreateWindowW(L"STATIC", L"Model:", WS_CHILD | WS_VISIBLE,
-            20, 20, 50, 20, hwnd, NULL, NULL, NULL);
-        hModel = CreateWindowW(L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-            80, 17, 180, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
+        hLabel = CreateWindowW(L"STATIC", L"Model:",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            20, 18, 50, 20, hwnd, (HMENU)ID_LABEL, NULL, NULL);
 
-        hOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-            20, 55, 660, 300, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
+        hModel = CreateWindowW(L"COMBOBOX", NULL,
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+            75, 14, 180, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
 
-        hInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            20, 375, 540, 30, hwnd, (HMENU)ID_INPUT, NULL, NULL);
+        // No client edge border on chat area
+        hOutput = CreateWindowExW(0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_BORDER,
+            20, 48, 660, 310, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
 
-        hSend = CreateWindowW(L"BUTTON", L"Send", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-            580, 373, 100, 34, hwnd, (HMENU)ID_SEND, NULL, NULL);
+        hInput = CreateWindowExW(0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_BORDER,
+            20, 370, 540, 28, hwnd, (HMENU)ID_INPUT, NULL, NULL);
 
-        hStatus = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-            20, 420, 660, 20, hwnd, (HMENU)ID_STATUS, NULL, NULL);
+        hSend = CreateWindowW(L"BUTTON", L"Send",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            580, 368, 100, 32, hwnd, (HMENU)ID_SEND, NULL, NULL);
 
         HFONT hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -425,15 +385,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SendMessageW(hInput, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hSend, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hModel, WM_SETFONT, (WPARAM)hFont, TRUE);
-        SendMessageW(hStatus, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(hLabel, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         LoadModels();
         break;
     }
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc = (HDC)wParam;
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+        return (LRESULT)hBrushWindow;
+    }
     case WM_COMMAND:
-        if (LOWORD(wParam) == ID_SEND) {
-            SendPrompt();
-        }
+        if (LOWORD(wParam) == ID_SEND) SendPrompt();
         break;
     case WM_KEYDOWN:
         if (wParam == VK_RETURN && GetFocus() == hInput) {
@@ -444,13 +408,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
         int w = LOWORD(lParam);
         int h = HIWORD(lParam);
-        if (hOutput) MoveWindow(hOutput, 20, 55, w - 40, h - 160, TRUE);
-        if (hInput) MoveWindow(hInput, 20, h - 85, w - 160, 30, TRUE);
-        if (hSend) MoveWindow(hSend, w - 120, h - 87, 100, 34, TRUE);
-        if (hStatus) MoveWindow(hStatus, 20, h - 40, w - 40, 20, TRUE);
+        if (hOutput) MoveWindow(hOutput, 20, 48, w - 40, h - 120, TRUE);
+        if (hInput) MoveWindow(hInput, 20, h - 60, w - 160, 28, TRUE);
+        if (hSend) MoveWindow(hSend, w - 120, h - 62, 100, 32, TRUE);
         break;
     }
     case WM_DESTROY:
+        if (hBrushWindow) DeleteObject(hBrushWindow);
         PostQuitMessage(0);
         break;
     default:
