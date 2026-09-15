@@ -68,7 +68,6 @@ ModelChoice g_models[] = {
 const int g_modelCount = sizeof(g_models) / sizeof(g_models[0]);
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-LRESULT CALLBACK RoundEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR);
 
 void ApplyRoundRegion(HWND hwnd, int radius) {
     RECT rc;
@@ -88,14 +87,12 @@ void DrawVerticalGradient(HDC hdc, RECT rc, COLORREF top, COLORREF bottom) {
     vertex[0].Green = (COLOR16)(GetGValue(top) << 8);
     vertex[0].Blue = (COLOR16)(GetBValue(top) << 8);
     vertex[0].Alpha = 0;
-
     vertex[1].x = rc.right;
     vertex[1].y = rc.bottom;
     vertex[1].Red = (COLOR16)(GetRValue(bottom) << 8);
     vertex[1].Green = (COLOR16)(GetGValue(bottom) << 8);
     vertex[1].Blue = (COLOR16)(GetBValue(bottom) << 8);
     vertex[1].Alpha = 0;
-
     GRADIENT_RECT gRect = { 0, 1 };
     GradientFill(hdc, vertex, 2, &gRect, 1, GRADIENT_FILL_RECT_V);
 }
@@ -119,13 +116,11 @@ void DrawRoundedGradientButton(HDC hdc, RECT rc, bool pressed, bool hot) {
         top = RGB(228, 228, 232);
         bottom = RGB(242, 242, 246);
     }
-
     HRGN rgn = CreateRoundRectRgn(rc.left, rc.top, rc.right, rc.bottom, 14, 14);
     SelectClipRgn(hdc, rgn);
     DrawVerticalGradient(hdc, rc, top, bottom);
     SelectClipRgn(hdc, NULL);
     DeleteObject(rgn);
-
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(200, 200, 205));
     HGDIOBJ oldPen = SelectObject(hdc, pen);
     HGDIOBJ oldBr = SelectObject(hdc, GetStockObject(NULL_BRUSH));
@@ -216,7 +211,6 @@ bool TryLocalMath(const std::wstring& prompt, std::wstring& out) {
         else return false;
     }
     if (s.empty()) return false;
-
     char op = 0;
     size_t opPos = std::string::npos;
     for (size_t i = 0; i < s.size(); i++) {
@@ -231,13 +225,11 @@ bool TryLocalMath(const std::wstring& prompt, std::wstring& out) {
         }
     }
     if (op == 0 || opPos == 0 || opPos + 1 >= s.size()) return false;
-
     std::string left = TrimDigits(s.substr(0, opPos));
     std::string right = TrimDigits(s.substr(opPos + 1));
     if (left.empty() || right.empty()) return false;
     for (char c : left) if (c < '0' || c > '9') return false;
     for (char c : right) if (c < '0' || c > '9') return false;
-
     std::string result;
     if (op == '+') result = AddBig(left, right);
     else if (op == '-') {
@@ -247,7 +239,6 @@ bool TryLocalMath(const std::wstring& prompt, std::wstring& out) {
         if (left.size() + right.size() > 200) return false;
         result = MulBig(left, right);
     } else return false;
-
     out = Utf8ToWide(result);
     return true;
 }
@@ -256,17 +247,13 @@ std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const st
     HINTERNET hSession = WinHttpOpen(L"SimpleAIAgent/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return "";
     WinHttpSetTimeouts(hSession, 5000, 5000, 15000, 20000);
-
     HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), port, 0);
     if (!hConnect) { WinHttpCloseHandle(hSession); return ""; }
-
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
     if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return ""; }
-
     std::wstring headers = L"Content-Type: application/json\r\n";
     BOOL bResults = WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(), (LPVOID)body.c_str(), (DWORD)body.size(), (DWORD)body.size(), 0);
     if (bResults) bResults = WinHttpReceiveResponse(hRequest, NULL);
-
     std::string response;
     if (bResults) {
         DWORD dwSize = 0;
@@ -282,7 +269,6 @@ std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const st
             }
         } while (dwSize > 0);
     }
-
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
@@ -354,7 +340,6 @@ std::wstring CleanReply(std::wstring s) {
     ReplaceAll(s, L"<redacted_thinking>", L"");
     ReplaceAll(s, L"</reasoning>", L"");
     ReplaceAll(s, L"<reasoning>", L"");
-
     std::wstring out;
     bool prevBlank = false;
     for (size_t i = 0; i < s.size(); i++) {
@@ -378,15 +363,12 @@ std::wstring CleanReply(std::wstring s) {
 std::wstring ExtractChatContent(const std::string& json) {
     size_t keyPos = std::string::npos;
     for (size_t i = 0; i + 9 < json.size(); i++) {
-        if (json[i] == '"' &&
-            json[i + 1] == 'c' && json[i + 2] == 'o' && json[i + 3] == 'n' &&
-            json[i + 4] == 't' && json[i + 5] == 'e' && json[i + 6] == 'n' &&
-            json[i + 7] == 't' && json[i + 8] == '"') {
+        if (json[i] == '"' && json[i + 1] == 'c' && json[i + 2] == 'o' && json[i + 3] == 'n' &&
+            json[i + 4] == 't' && json[i + 5] == 'e' && json[i + 6] == 'n' && json[i + 7] == 't' && json[i + 8] == '"') {
             keyPos = i;
         }
     }
     if (keyPos == std::string::npos) return L"";
-
     size_t pos = keyPos + 9;
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
     if (pos >= json.size() || json[pos] != ':') return L"";
@@ -394,7 +376,6 @@ std::wstring ExtractChatContent(const std::string& json) {
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n' || json[pos] == '\r')) pos++;
     if (pos >= json.size() || json[pos] != '"') return L"";
     pos++;
-
     std::string text;
     for (size_t i = pos; i < json.size(); i++) {
         if (json[i] == '\\' && i + 1 < json.size()) {
@@ -439,7 +420,6 @@ std::string BuildBody(const char* modelId, const std::string& promptUtf, const s
         while ((p = s.find('\n', p)) != std::string::npos) { s.replace(p, 1, "\\n"); p += 2; }
         return s;
     };
-
     std::string system =
         "You are a helpful assistant in Simple AI Agent. "
         "Reply in plain text only. Never use emojis. "
@@ -448,7 +428,6 @@ std::string BuildBody(const char* modelId, const std::string& promptUtf, const s
         "Never invent or pad digits in math. "
         "When you show code, wrap it in markdown fences. "
         "If asked what model you are, answer with: " + modelLabel + ".";
-
     return std::string("{\"model\":\"") + modelId +
         "\",\"messages\":["
         "{\"role\":\"system\",\"content\":\"" + escape(system) + "\"},"
@@ -461,30 +440,23 @@ void SendPrompt() {
     GetWindowTextW(hInput, inputBuf, 4096);
     std::wstring prompt = inputBuf;
     if (prompt.empty()) return;
-
     int sel = (int)SendMessageW(hModel, CB_GETCURSEL, 0, 0);
     if (sel < 0 || sel >= g_modelCount) sel = 0;
-
     AppendOutput(L"\r\nYou: " + prompt + L"\r\n");
     SetWindowTextW(hInput, L"");
     EnableWindow(hSend, FALSE);
-
     std::wstring answer;
-
     if (TryLocalMath(prompt, answer)) {
         AppendOutput(L"Agent: " + answer + L"\r\n");
         EnableWindow(hSend, TRUE);
         InvalidateRect(hSend, NULL, TRUE);
         return;
     }
-
     std::string promptUtf = WideToUtf8(prompt);
     std::string modelLabel = WideToUtf8(g_models[sel].display);
-
     bool used[32] = {};
     int order[32];
     int orderCount = 0;
-
     ModelChoice& choice = g_models[sel];
     for (int i = 0; i < choice.preferredCount; i++) {
         int idx = choice.preferred[i];
@@ -496,7 +468,6 @@ void SendPrompt() {
     for (int i = 0; i < g_endpointCount; i++) {
         if (!used[i]) order[orderCount++] = i;
     }
-
     for (int pass = 0; pass < 2 && answer.empty(); pass++) {
         if (pass > 0) Sleep(1200);
         for (int i = 0; i < orderCount; i++) {
@@ -508,9 +479,7 @@ void SendPrompt() {
             if (!answer.empty()) break;
         }
     }
-
     if (answer.empty()) answer = L"All backends busy. Wait 20s and send again.";
-
     AppendOutput(L"Agent: " + answer + L"\r\n");
     EnableWindow(hSend, TRUE);
     InvalidateRect(hSend, NULL, TRUE);
@@ -519,10 +488,8 @@ void SendPrompt() {
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_WIN95_CLASSES };
     InitCommonControlsEx(&icc);
-
     hBrushWindow = CreateSolidBrush(RGB(245, 245, 247));
     hBrushEdit = CreateSolidBrush(RGB(255, 255, 255));
-
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProc;
@@ -532,14 +499,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     wc.lpszClassName = L"SimpleAIAgentClass";
     wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     RegisterClassExW(&wc);
-
     HWND hwnd = CreateWindowExW(0, L"SimpleAIAgentClass", L"Simple AI Agent",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 740, 540,
         NULL, NULL, hInstance, NULL);
-
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
-
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
@@ -554,46 +518,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         hFontUI = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-
         hFontCode = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN, L"Consolas");
-
-        hLabel = CreateWindowW(L"STATIC", L"Model:",
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
+        hLabel = CreateWindowW(L"STATIC", L"Model:", WS_CHILD | WS_VISIBLE | SS_LEFT,
             24, 18, 50, 22, hwnd, (HMENU)ID_LABEL, NULL, NULL);
-
-        hModel = CreateWindowW(L"COMBOBOX", NULL,
-            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        hModel = CreateWindowW(L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
             80, 14, 190, 220, hwnd, (HMENU)ID_MODEL, NULL, NULL);
-
         hOutput = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_CLIPSIBLINGS,
             24, 56, 676, 360, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
-
         hInput = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_CLIPSIBLINGS,
             24, 432, 540, 36, hwnd, (HMENU)ID_INPUT, NULL, NULL);
-
         SendMessageW(hInput, EM_SETCUEBANNER, TRUE, (LPARAM)L"Ask Anything...");
-
         hSend = CreateWindowW(L"BUTTON", L"Send",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_CLIPSIBLINGS,
             576, 430, 124, 40, hwnd, (HMENU)ID_SEND, NULL, NULL);
-
         SendMessageW(hOutput, WM_SETFONT, (WPARAM)hFontCode, TRUE);
         SendMessageW(hInput, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessageW(hSend, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessageW(hModel, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessageW(hLabel, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-        SetWindowTheme = NULL; // keep native where possible
-        (void)0;
-
         ApplyRoundRegion(hOutput, 16);
         ApplyRoundRegion(hInput, 14);
         ApplyRoundRegion(hSend, 14);
-
         LoadModels();
         break;
     }
@@ -601,7 +550,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         HDC hdc = (HDC)wParam;
         RECT rc;
         GetClientRect(hwnd, &rc);
-        // Subtle top-to-bottom gradient, same light family
         DrawVerticalGradient(hdc, rc, RGB(252, 252, 253), RGB(240, 240, 243));
         return 1;
     }
@@ -611,8 +559,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         RECT rc;
         GetClientRect(hwnd, &rc);
         DrawVerticalGradient(hdc, rc, RGB(252, 252, 253), RGB(240, 240, 243));
-
-        // Soft rounded outline behind chat + input cluster
         if (hOutput && hInput) {
             RECT ro, ri;
             GetWindowRect(hOutput, &ro);
@@ -631,7 +577,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             bool pressed = (dis->itemState & ODS_SELECTED) != 0;
             bool hot = (dis->itemState & ODS_HOTLIGHT) != 0 || (dis->itemState & ODS_FOCUS) != 0;
             DrawRoundedGradientButton(dis->hDC, dis->rcItem, pressed, hot);
-
             SetBkMode(dis->hDC, TRANSPARENT);
             SetTextColor(dis->hDC, RGB(40, 40, 45));
             HFONT old = (HFONT)SelectObject(dis->hDC, hFontUI);
@@ -665,7 +610,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
         int w = LOWORD(lParam);
         int h = HIWORD(lParam);
-
         int left = 24;
         int top = 56;
         int rightPad = 24;
@@ -674,16 +618,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         int sendW = 124;
         int sendH = 40;
         int gap = 10;
-
         int panelW = w - left - rightPad;
         if (panelW < 260) panelW = 260;
-
         int inputY = h - bottomPad - inputH;
         if (inputY < top + 90) inputY = top + 90;
-
         int outputH = inputY - gap - top;
         if (outputH < 70) outputH = 70;
-
         if (hOutput) {
             MoveWindow(hOutput, left, top, panelW, outputH, TRUE);
             ApplyRoundRegion(hOutput, 16);
@@ -697,10 +637,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             ApplyRoundRegion(hSend, 14);
             InvalidateRect(hSend, NULL, TRUE);
         }
-
         if (hInput) SetWindowPos(hInput, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         if (hSend) SetWindowPos(hSend, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-
         InvalidateRect(hwnd, NULL, TRUE);
         break;
     }
