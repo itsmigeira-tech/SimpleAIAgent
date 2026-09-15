@@ -12,9 +12,10 @@ target_link_libraries(SimpleAIAgent PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(SimpleAIAgent PRIVATE /W4 /utf-8)
+    target_compile_options(SimpleAIAgent PRIVATE /W3 /utf-8 /MP /O2 /GL)
+    target_link_options(SimpleAIAgent PRIVATE /LTCG)
 else()
-    target_compile_options(SimpleAIAgent PRIVATE -Wall -Wextra)
+    target_compile_options(SimpleAIAgent PRIVATE -Wall -O2)
 endif()
 
 install(TARGETS SimpleAIAgent RUNTIME DESTINATION bin)

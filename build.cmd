@@ -5,98 +5,110 @@ echo.
 echo === Simple AI Agent Build ===
 echo.
 
-:: Go to the folder where this script lives
 cd /d "%~dp0"
 
-:: Find CMakeLists.txt (handles nested zip folders)
+:: Find project root
 if exist "CMakeLists.txt" (
     set "ROOT=%cd%"
 ) else if exist "SimpleAIAgent-main\CMakeLists.txt" (
     cd SimpleAIAgent-main
-    set "ROOT=%cd%"
 ) else if exist "SimpleAIAgent\CMakeLists.txt" (
     cd SimpleAIAgent
-    set "ROOT=%cd%"
 ) else (
-    :: Search one level of subfolders
     for /d %%D in (*) do (
         if exist "%%D\CMakeLists.txt" (
             cd "%%D"
-            set "ROOT=%cd%"
             goto :found
         )
     )
-    echo ERROR: CMakeLists.txt not found near this script.
-    echo.
-    echo Put build.cmd in the same folder as CMakeLists.txt
-    echo or extract the full GitHub ZIP again.
-    echo.
-    echo Current folder: %cd%
-    echo Files here:
+    echo ERROR: CMakeLists.txt not found.
+    echo Current: %cd%
     dir /b
-    echo.
     pause
     exit /b 1
 )
 :found
-echo Project folder: %cd%
-echo.
+echo Project: %cd%
 
-:: Check admin for installs
+:: Detect tools without elevating first
+set "NEED_CMAKE=0"
+set "NEED_VS=0"
+where cmake >nul 2>&1 || set "NEED_CMAKE=1"
+where cl >nul 2>&1
+if errorlevel 1 (
+    if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+        for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set "VSINSTALL=%%i"
+    )
+    if not defined VSINSTALL set "NEED_VS=1"
+)
+
+:: Only elevate when an install is required
+if "%NEED_CMAKE%"=="1" goto :need_admin
+if "%NEED_VS%"=="1" goto :need_admin
+goto :build
+
+:need_admin
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo Requesting Administrator rights for installs...
+    echo Need Administrator to install missing tools...
     powershell -Command "Start-Process -FilePath '%~f0' -WorkingDirectory '%cd%' -Verb RunAs"
     exit /b
 )
 
-echo [1/4] Checking winget...
 where winget >nul 2>&1
-if %errorlevel% neq 0 (
-    echo winget not found. Install App Installer from Microsoft Store, then run this again.
+if errorlevel 1 (
+    echo winget missing. Install App Installer from Microsoft Store.
     pause
     exit /b 1
 )
 
-echo [2/4] Installing CMake if needed...
-where cmake >nul 2>&1
-if %errorlevel% neq 0 (
-    winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements
+if "%NEED_CMAKE%"=="1" (
+    echo Installing CMake...
+    winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements --disable-interactivity
     set "PATH=%PATH%;%ProgramFiles%\CMake\bin"
-) else (
-    echo CMake already installed.
 )
 
-echo [3/4] Installing Visual Studio Build Tools if needed...
-where cl >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Installing VS 2022 Build Tools. This takes several minutes...
-    winget install -e --id Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-) else (
-    echo C++ compiler already available.
+if "%NEED_VS%"=="1" (
+    echo Installing VS 2022 Build Tools (long first run)...
+    winget install -e --id Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --disable-interactivity --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 )
 
-:: Refresh PATH for this session
+:build
 set "PATH=%PATH%;%ProgramFiles%\CMake\bin"
-for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set "VSINSTALL=%%i"
-if defined VSINSTALL (
-    call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+if not defined VSINSTALL (
+    if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+        for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set "VSINSTALL=%%i"
+    )
+)
+if defined VSINSTALL call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+
+where cmake >nul 2>&1
+if errorlevel 1 (
+    echo CMake still not found. Open a new terminal and run build.cmd again.
+    pause
+    exit /b 1
 )
 
-echo [4/4] Building...
 if not exist build mkdir build
 cd build
 
-cmake .. -G "Visual Studio 17 2022" -A x64
-if %errorlevel% neq 0 (
-    echo CMake configure failed.
-    echo Try opening "x64 Native Tools Command Prompt for VS 2022" and run build.cmd from there.
-    pause
-    exit /b 1
+:: Configure only when needed
+if not exist CMakeCache.txt (
+    echo Configuring...
+    cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_CONFIGURATION_TYPES=Release
+    if errorlevel 1 (
+        echo Configure failed.
+        pause
+        exit /b 1
+    )
+) else (
+    echo Already configured. Skipping cmake configure.
 )
 
-cmake --build . --config Release
-if %errorlevel% neq 0 (
+echo Building Release (parallel)...
+set CMAKE_BUILD_PARALLEL_LEVEL=%NUMBER_OF_PROCESSORS%
+cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
+if errorlevel 1 (
     echo Build failed.
     pause
     exit /b 1
@@ -105,8 +117,6 @@ if %errorlevel% neq 0 (
 echo.
 echo === Done ===
 echo EXE: %cd%\Release\SimpleAIAgent.exe
+if exist "Release\SimpleAIAgent.exe" explorer /select,"%cd%\Release\SimpleAIAgent.exe"
 echo.
-if exist "Release\SimpleAIAgent.exe" (
-    explorer /select,"%cd%\Release\SimpleAIAgent.exe"
-)
 pause
