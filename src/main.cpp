@@ -24,18 +24,12 @@ struct FreeModel {
     const wchar_t* path;
 };
 
-// Ordered by higher free rate first. No key. No signup.
-// LLM7 ~10 RPM | Kilo free pool ~200/hr | OVH ~2 RPM
+// Short names. Coding + daily use. Higher rate first.
 FreeModel g_models[] = {
-    { L"gpt-oss-20b (LLM7 ~10 RPM)", "gpt-oss:20b", L"api.llm7.io", 443, L"/v1/chat/completions" },
-    { L"Mistral-Nemo (LLM7 ~10 RPM)", "mistral-Nemo-Instruct-2407", L"api.llm7.io", 443, L"/v1/chat/completions" },
-    { L"default (LLM7 ~10 RPM)", "default", L"api.llm7.io", 443, L"/v1/chat/completions" },
-    { L"kilo-auto/free (~200/hr)", "kilo-auto/free", L"api.kilo.ai", 443, L"/api/gateway/chat/completions" },
-    { L"Qwen3-32B (OVH)", "Qwen3-32B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
-    { L"Qwen3.6-27B (OVH)", "Qwen3.6-27B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
-    { L"Qwen3-Coder (OVH)", "Qwen3-Coder-30B-A3B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
-    { L"DeepSeek-R1-Distill (OVH)", "DeepSeek-R1-Distill-Llama-70B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
-    { L"Llama-3.3-70B (OVH)", "Meta-Llama-3_3-70B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"GPT-OSS", "gpt-oss:20b", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { L"Qwen Coder", "Qwen3-Coder-30B-A3B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"DeepSeek", "DeepSeek-R1-Distill-Llama-70B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { L"Qwen", "Qwen3-32B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
 };
 const int g_modelCount = sizeof(g_models) / sizeof(g_models[0]);
 
@@ -154,7 +148,7 @@ void LoadModels() {
         SendMessageW(hModel, CB_ADDSTRING, 0, (LPARAM)g_models[i].display);
     }
     SendMessageW(hModel, CB_SETCURSEL, 0, 0);
-    SetStatus(L"Ready. Higher rate models listed first.");
+    SetStatus(L"");
 }
 
 void SendPrompt() {
@@ -168,7 +162,7 @@ void SendPrompt() {
 
     AppendOutput(L"\r\nYou: " + prompt + L"\r\n");
     SetWindowTextW(hInput, L"");
-    SetStatus(L"Thinking...");
+    SetStatus(L"...");
     EnableWindow(hSend, FALSE);
 
     std::string promptUtf = WideToUtf8(prompt);
@@ -192,13 +186,12 @@ void SendPrompt() {
     };
 
     std::wstring answer;
-    // Try selected model first, then fall back to others on rate limit
     for (int attempt = 0; attempt < g_modelCount; attempt++) {
         int idx = (sel + attempt) % g_modelCount;
         FreeModel& m = g_models[idx];
 
         if (attempt > 0) {
-            SetStatus((L"Rate limited. Trying " + std::wstring(m.display)).c_str());
+            SetStatus(L"...");
             Sleep(800);
         }
 
@@ -208,20 +201,15 @@ void SendPrompt() {
         if (LooksLikeRateLimit(resp)) continue;
 
         answer = ExtractChatContent(resp);
-        if (!answer.empty()) {
-            if (attempt > 0) {
-                AppendOutput(L"(used fallback: " + std::wstring(m.display) + L")\r\n");
-            }
-            break;
-        }
+        if (!answer.empty()) break;
     }
 
     if (answer.empty()) {
-        answer = L"All free endpoints are busy or rate limited. Wait ~30s and try again.";
+        answer = L"Busy. Wait 30s and try again.";
     }
 
     AppendOutput(L"Agent: " + answer + L"\r\n");
-    SetStatus(L"Ready");
+    SetStatus(L"");
     EnableWindow(hSend, TRUE);
 }
 
@@ -257,27 +245,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
-        CreateWindowW(L"STATIC", L"Free AI Agent (no key)", WS_CHILD | WS_VISIBLE,
-            20, 15, 300, 20, hwnd, NULL, NULL, NULL);
-
         CreateWindowW(L"STATIC", L"Model:", WS_CHILD | WS_VISIBLE,
-            20, 45, 50, 20, hwnd, NULL, NULL, NULL);
+            20, 20, 50, 20, hwnd, NULL, NULL, NULL);
         hModel = CreateWindowW(L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-            80, 42, 320, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
+            80, 17, 180, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
 
         hOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-            20, 80, 660, 280, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
+            20, 55, 660, 300, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
 
         hInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            20, 380, 540, 30, hwnd, (HMENU)ID_INPUT, NULL, NULL);
+            20, 375, 540, 30, hwnd, (HMENU)ID_INPUT, NULL, NULL);
 
         hSend = CreateWindowW(L"BUTTON", L"Send", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-            580, 378, 100, 34, hwnd, (HMENU)ID_SEND, NULL, NULL);
+            580, 373, 100, 34, hwnd, (HMENU)ID_SEND, NULL, NULL);
 
-        hStatus = CreateWindowW(L"STATIC", L"Starting...", WS_CHILD | WS_VISIBLE,
-            20, 430, 660, 20, hwnd, (HMENU)ID_STATUS, NULL, NULL);
+        hStatus = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+            20, 420, 660, 20, hwnd, (HMENU)ID_STATUS, NULL, NULL);
 
         HFONT hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -289,7 +274,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SendMessageW(hStatus, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         LoadModels();
-        AppendOutput(L"Welcome. Free models. No API key.\r\nHigher rate models are listed first.\r\nAuto-fallback on rate limit.\r\n");
         break;
     }
     case WM_COMMAND:
@@ -306,10 +290,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
         int w = LOWORD(lParam);
         int h = HIWORD(lParam);
-        if (hOutput) MoveWindow(hOutput, 20, 80, w - 40, h - 200, TRUE);
-        if (hInput) MoveWindow(hInput, 20, h - 100, w - 160, 30, TRUE);
-        if (hSend) MoveWindow(hSend, w - 120, h - 102, 100, 34, TRUE);
-        if (hStatus) MoveWindow(hStatus, 20, h - 50, w - 40, 20, TRUE);
+        if (hOutput) MoveWindow(hOutput, 20, 55, w - 40, h - 160, TRUE);
+        if (hInput) MoveWindow(hInput, 20, h - 85, w - 160, 30, TRUE);
+        if (hSend) MoveWindow(hSend, w - 120, h - 87, 100, 34, TRUE);
+        if (hStatus) MoveWindow(hStatus, 20, h - 40, w - 40, 20, TRUE);
         break;
     }
     case WM_DESTROY:
