@@ -8,6 +8,10 @@
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "winhttp.lib")
 
+#ifndef EM_SETCUEBANNER
+#define EM_SETCUEBANNER 0x1501
+#endif
+
 #define ID_INPUT 101
 #define ID_OUTPUT 102
 #define ID_SEND 103
@@ -145,8 +149,35 @@ void ReplaceAll(std::wstring& s, const std::wstring& from, const std::wstring& t
     }
 }
 
+// Turn markdown fences into clear code blocks in the plain text chat
+std::wstring FormatCodeBlocks(std::wstring s) {
+    const std::wstring fence = L"```";
+    const std::wstring openBar = L"\r\n----- CODE -----\r\n";
+    const std::wstring closeBar = L"\r\n----- END CODE -----\r\n";
+
+    size_t pos = 0;
+    bool open = true;
+    while ((pos = s.find(fence, pos)) != std::wstring::npos) {
+        size_t endLine = s.find(L'\n', pos);
+        // Opening fence may include a language tag on the same line: ```cpp
+        size_t replaceEnd = pos + fence.size();
+        if (open) {
+            if (endLine != std::wstring::npos && endLine < pos + 20) {
+                // skip language tag through end of that line
+                replaceEnd = endLine + 1;
+            }
+            s.replace(pos, replaceEnd - pos, openBar);
+            pos += openBar.size();
+        } else {
+            s.replace(pos, fence.size(), closeBar);
+            pos += closeBar.size();
+        }
+        open = !open;
+    }
+    return s;
+}
+
 std::wstring CleanReply(std::wstring s) {
-    // Remove think / reasoning tags and leftovers
     ReplaceAll(s, L"</think>", L"");
     ReplaceAll(s, L"<think>", L"");
     ReplaceAll(s, L"</redacted_thinking>", L"");
@@ -154,21 +185,6 @@ std::wstring CleanReply(std::wstring s) {
     ReplaceAll(s, L"</reasoning>", L"");
     ReplaceAll(s, L"<reasoning>", L"");
 
-    // If multiple answers were glued, keep the last non-empty segment
-    // Split on repeated greeting patterns by taking text after last tag residue
-    size_t lastBreak = s.find_last_of(L"\n");
-    // Prefer the final paragraph if the model dumped several replies
-    std::vector<std::wstring> parts;
-    std::wstring cur;
-    for (size_t i = 0; i < s.size(); i++) {
-        if (s[i] == L'\n') {
-            // keep newlines inside one block
-            cur.push_back(L'\n');
-        } else {
-            cur.push_back(s[i]);
-        }
-    }
-    // Collapse runs of blank lines
     std::wstring out;
     bool prevBlank = false;
     for (size_t i = 0; i < s.size(); i++) {
@@ -184,10 +200,10 @@ std::wstring CleanReply(std::wstring s) {
     }
     s = out;
 
-    // Trim
     while (!s.empty() && (s.front() == L' ' || s.front() == L'\n' || s.front() == L'\t')) s.erase(s.begin());
     while (!s.empty() && (s.back() == L' ' || s.back() == L'\n' || s.back() == L'\t')) s.pop_back();
 
+    s = FormatCodeBlocks(s);
     return StripEmojis(s);
 }
 
@@ -261,7 +277,9 @@ std::string BuildBody(const char* modelId, const std::string& promptUtf, const s
         "You are a helpful assistant in Simple AI Agent. "
         "Reply in plain text only. Never use emojis. "
         "Never output tags like </think> or <think>. "
-        "Give one short answer only. Do not repeat yourself. "
+        "Give one clear answer. Do not repeat yourself. "
+        "When you show code, wrap it in markdown fences like:\n"
+        "```language\ncode here\n```\n"
         "For simple math, answer with the number and one short sentence. "
         "If asked what model you are, answer with: " + modelLabel + ".";
 
@@ -365,7 +383,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
             75, 14, 180, 200, hwnd, (HMENU)ID_MODEL, NULL, NULL);
 
-        // No client edge border on chat area
         hOutput = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_BORDER,
             20, 48, 660, 310, hwnd, (HMENU)ID_OUTPUT, NULL, NULL);
@@ -374,6 +391,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_BORDER,
             20, 370, 540, 28, hwnd, (HMENU)ID_INPUT, NULL, NULL);
 
+        // Placeholder when empty
+        SendMessageW(hInput, EM_SETCUEBANNER, TRUE, (LPARAM)L"Ask Anything...");
+
         hSend = CreateWindowW(L"BUTTON", L"Send",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             580, 368, 100, 32, hwnd, (HMENU)ID_SEND, NULL, NULL);
@@ -381,7 +401,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         HFONT hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        SendMessageW(hOutput, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // Monospace for chat so code lines up
+        HFONT hCodeFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            FIXED_PITCH | FF_MODERN, L"Consolas");
+
+        SendMessageW(hOutput, WM_SETFONT, (WPARAM)hCodeFont, TRUE);
         SendMessageW(hInput, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hSend, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hModel, WM_SETFONT, (WPARAM)hFont, TRUE);
