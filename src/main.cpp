@@ -16,20 +16,42 @@
 
 HWND hInput, hOutput, hSend, hModel, hStatus;
 
-struct FreeModel {
-    const wchar_t* display;
+struct Endpoint {
     const char* id;
     const wchar_t* host;
     INTERNET_PORT port;
     const wchar_t* path;
 };
 
-// Short names. Coding + daily use. Higher rate first.
-FreeModel g_models[] = {
-    { L"GPT-OSS", "gpt-oss:20b", L"api.llm7.io", 443, L"/v1/chat/completions" },
-    { L"Qwen Coder", "Qwen3-Coder-30B-A3B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
-    { L"DeepSeek", "DeepSeek-R1-Distill-Llama-70B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
-    { L"Qwen", "Qwen3-32B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+// Short UI names. Each maps to preferred endpoints first, then full pool.
+struct ModelChoice {
+    const wchar_t* display;
+    int preferred[8];
+    int preferredCount;
+};
+
+// Large free pool. No key.
+Endpoint g_endpoints[] = {
+    { "gpt-oss:20b", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { "default", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { "fast", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { "mistral-Nemo-Instruct-2407", L"api.llm7.io", 443, L"/v1/chat/completions" },
+    { "kilo-auto/free", L"api.kilo.ai", 443, L"/api/gateway/chat/completions" },
+    { "Qwen3-Coder-30B-A3B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { "Qwen3-32B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { "Qwen3.6-27B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { "DeepSeek-R1-Distill-Llama-70B", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { "gpt-oss-20b", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { "Meta-Llama-3_3-70B-Instruct", L"oai.endpoints.kepler.ai.cloud.ovh.net", 443, L"/v1/chat/completions" },
+    { "openai", L"text.pollinations.ai", 443, L"/openai" },
+};
+const int g_endpointCount = sizeof(g_endpoints) / sizeof(g_endpoints[0]);
+
+ModelChoice g_models[] = {
+    { L"GPT-OSS", { 0, 9, 1, 4, 11 }, 5 },
+    { L"Qwen Coder", { 5, 1, 0, 4, 11 }, 5 },
+    { L"DeepSeek", { 8, 1, 0, 4, 11 }, 5 },
+    { L"Qwen", { 6, 7, 1, 0, 4, 11 }, 6 },
 };
 const int g_modelCount = sizeof(g_models) / sizeof(g_models[0]);
 
@@ -54,6 +76,9 @@ std::wstring Utf8ToWide(const std::string& s) {
 std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const std::wstring& path, const std::string& body) {
     HINTERNET hSession = WinHttpOpen(L"SimpleAIAgent/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return "";
+
+    // Short timeouts so busy hosts fail fast and we try the next
+    WinHttpSetTimeouts(hSession, 5000, 5000, 15000, 20000);
 
     HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), port, 0);
     if (!hConnect) {
@@ -94,12 +119,13 @@ std::string HttpPostHttps(const std::wstring& host, INTERNET_PORT port, const st
     return response;
 }
 
-bool LooksLikeRateLimit(const std::string& json) {
+bool LooksLikeFail(const std::string& json) {
+    if (json.empty()) return true;
     if (json.find("429") != std::string::npos) return true;
     if (json.find("rate limit") != std::string::npos) return true;
     if (json.find("Rate limit") != std::string::npos) return true;
     if (json.find("too many requests") != std::string::npos) return true;
-    if (json.empty()) return true;
+    if (json.find("\"error\"") != std::string::npos && json.find("\"content\"") == std::string::npos) return true;
     return false;
 }
 
@@ -151,21 +177,7 @@ void LoadModels() {
     SetStatus(L"");
 }
 
-void SendPrompt() {
-    wchar_t inputBuf[4096] = {};
-    GetWindowTextW(hInput, inputBuf, 4096);
-    std::wstring prompt = inputBuf;
-    if (prompt.empty()) return;
-
-    int sel = (int)SendMessageW(hModel, CB_GETCURSEL, 0, 0);
-    if (sel < 0 || sel >= g_modelCount) sel = 0;
-
-    AppendOutput(L"\r\nYou: " + prompt + L"\r\n");
-    SetWindowTextW(hInput, L"");
-    SetStatus(L"...");
-    EnableWindow(hSend, FALSE);
-
-    std::string promptUtf = WideToUtf8(prompt);
+std::string BuildBody(const char* modelId, const std::string& promptUtf) {
     auto escape = [](std::string s) {
         size_t p = 0;
         while ((p = s.find('\\', p)) != std::string::npos) {
@@ -184,28 +196,58 @@ void SendPrompt() {
         }
         return s;
     };
+    return std::string("{\"model\":\"") + modelId + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + escape(promptUtf) + "\"}],\"stream\":false}";
+}
 
+void SendPrompt() {
+    wchar_t inputBuf[4096] = {};
+    GetWindowTextW(hInput, inputBuf, 4096);
+    std::wstring prompt = inputBuf;
+    if (prompt.empty()) return;
+
+    int sel = (int)SendMessageW(hModel, CB_GETCURSEL, 0, 0);
+    if (sel < 0 || sel >= g_modelCount) sel = 0;
+
+    AppendOutput(L"\r\nYou: " + prompt + L"\r\n");
+    SetWindowTextW(hInput, L"");
+    SetStatus(L"...");
+    EnableWindow(hSend, FALSE);
+
+    std::string promptUtf = WideToUtf8(prompt);
     std::wstring answer;
-    for (int attempt = 0; attempt < g_modelCount; attempt++) {
-        int idx = (sel + attempt) % g_modelCount;
-        FreeModel& m = g_models[idx];
 
-        if (attempt > 0) {
-            SetStatus(L"...");
-            Sleep(800);
+    // Build ordered try list: preferred first, then every other endpoint
+    bool used[32] = {};
+    int order[32];
+    int orderCount = 0;
+
+    ModelChoice& choice = g_models[sel];
+    for (int i = 0; i < choice.preferredCount; i++) {
+        int idx = choice.preferred[i];
+        if (idx >= 0 && idx < g_endpointCount && !used[idx]) {
+            used[idx] = true;
+            order[orderCount++] = idx;
         }
+    }
+    for (int i = 0; i < g_endpointCount; i++) {
+        if (!used[i]) order[orderCount++] = i;
+    }
 
-        std::string body = "{\"model\":\"" + std::string(m.id) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + escape(promptUtf) + "\"}],\"stream\":false}";
-        std::string resp = HttpPostHttps(m.host, m.port, m.path, body);
-
-        if (LooksLikeRateLimit(resp)) continue;
-
-        answer = ExtractChatContent(resp);
-        if (!answer.empty()) break;
+    // Up to 2 full passes with short backoff
+    for (int pass = 0; pass < 2 && answer.empty(); pass++) {
+        if (pass > 0) Sleep(1200);
+        for (int i = 0; i < orderCount; i++) {
+            Endpoint& ep = g_endpoints[order[i]];
+            std::string body = BuildBody(ep.id, promptUtf);
+            std::string resp = HttpPostHttps(ep.host, ep.port, ep.path, body);
+            if (LooksLikeFail(resp)) continue;
+            answer = ExtractChatContent(resp);
+            if (!answer.empty()) break;
+        }
     }
 
     if (answer.empty()) {
-        answer = L"Busy. Wait 30s and try again.";
+        answer = L"All backends busy. Wait 20s and send again.";
     }
 
     AppendOutput(L"Agent: " + answer + L"\r\n");
